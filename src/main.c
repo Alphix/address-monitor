@@ -126,8 +126,19 @@ netdev_add(int index, const char *name)
 	}
 
 	dev = malloc(sizeof(*dev));
-	dev->index = index;
+	if (!dev) {
+		perror("malloc");
+		return -1;
+	}
+
 	dev->name = strdup(name);
+	if (!dev->name) {
+		perror("strdup");
+		free(dev);
+		return -1;
+	}
+
+	dev->index = index;
 	dev->monitored = true;
 	list_add(&dev->list, &netdevs);
 
@@ -248,22 +259,17 @@ netlink_read(int nfd)
 static int
 netlink_get_names(int sock)
 {
-	struct {
-	    struct nlmsghdr nlhdr;
-	    struct ifinfomsg infomsg;
-	} msg;
 	size_t msglen = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+	struct {
+		struct nlmsghdr nlhdr;
+		struct ifinfomsg infomsg;
+	} msg = {
+		.nlhdr.nlmsg_len = msglen,
+		.nlhdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ROOT,
+		.nlhdr.nlmsg_type = RTM_GETLINK,
+		.infomsg.ifi_family = AF_UNSPEC,
+	};
 	ssize_t r;
-
-	// NLM_F_REQUEST - ask the kernel for data
-	// NLM_F_ROOT    - provide all the addresses
-	// RTM_GETLINK   - link information
-	// AF_UNSPEC     - any kind of link
-	memset(&msg, 0, sizeof(msg));
-	msg.nlhdr.nlmsg_len    = msglen;
-	msg.nlhdr.nlmsg_flags  = NLM_F_REQUEST | NLM_F_ROOT;
-	msg.nlhdr.nlmsg_type   = RTM_GETLINK;
-	msg.infomsg.ifi_family = AF_UNSPEC;
 
 	r = send(sock, &msg, msglen, 0);
 	if (r < 0 || (size_t)r != msglen) {
