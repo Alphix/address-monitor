@@ -318,13 +318,11 @@ netlink_init()
 
 	if (bind(fd, (struct sockaddr *)&snl, sizeof(snl)) < 0) {
 		perror("bind");
-		/* FIXME: add xclose */
 		close(fd);
 		return -1;
 	}
 
 	if (netlink_get_names(fd) < 0) {
-		/* FIXME: add xclose */
 		close(fd);
 		return -1;
 	}
@@ -595,7 +593,7 @@ childfd_kill(int *cfd)
 }
 
 static int
-childfd_init(_unused_ const char *path)
+childfd_init(const char *path)
 {
 	int pidfd;
 	struct clone_args args = {
@@ -612,10 +610,9 @@ childfd_init(_unused_ const char *path)
 		return -1;
 	} else if (pid == 0) {
 		/* Child */
-		printf("In child process. Sleeping..\n");
-		sleep(10);
-		printf("Exiting child process.\n");
-		exit(0);
+		execl(path, path, NULL);
+		perror("execl");
+		exit(EXIT_FAILURE);
 	} else {
 		/* Parent */
 		printf("Created child PID %d with pidfd %d\n", pid, pidfd);
@@ -651,7 +648,7 @@ event_loop()
 	efd = epoll_create1(EPOLL_CLOEXEC);
 	if (efd < 0) {
 		perror("epoll_create");
-		exit(1);
+		exit(EXIT_FAILURE);
 	}
 
 	epoll_add(efd, sfd);
@@ -691,7 +688,7 @@ event_loop()
 
 		} else if (ev.data.fd == tfd) {
 			timerfd_read(tfd);
-			cfd = childfd_init(NULL);
+			cfd = childfd_init("./test.sh");
 			printf("Child pidfd = %i\n", cfd);
 			epoll_add(efd, cfd);
 
@@ -798,5 +795,7 @@ main(int argc, char **argv)
 		if (count > 3)
 			break;
 	}
+
+	exit(EXIT_SUCCESS);
 }
 
