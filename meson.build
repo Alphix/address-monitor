@@ -18,8 +18,8 @@ cc_flags = [
 	'-D_GNU_SOURCE',
 ]
 cc_warning_flags = [
-	'-Wno-sign-compare',	# Lots of pointless warnings
 	'-Werror=implicit-function-declaration',	# A warning is too weak
+	'-Werror=implicit-fallthrough', # No implicit fallthroughs in switch statements
 ]
 cc_flags += cc.get_supported_arguments(cc_warning_flags)
 cc_extra_flags = [

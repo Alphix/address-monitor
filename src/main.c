@@ -189,7 +189,7 @@ get_linknames(int sock)
 	ssize_t ret;
 
 	ret = send(sock, &msg, msglen, 0);
-	if (ret != msglen) {
+	if (ret < 0 || (size_t)ret != msglen) {
 		fprintf(stderr, "Error sending netlink msg\n");
 	}
 }
@@ -219,48 +219,55 @@ setup_netlinkfd()
 	return fd;
 }
 
+/*
+ * Return values:
+ * < 0 = error
+ *   0 = done
+ * > 0 = read again
+ */
 static int
-read_netlink(int fd)
+read_netlink_once(int fd)
 {
 	char buffer[16 * 1024];
-
 	ssize_t ret = recv(fd, buffer, sizeof(buffer), 0);
-	printf("Read netlink: %i\n", (int)ret);
 
 	if (ret == 0) {
 		return 0;
 	} else if (ret < 0) {
-		switch (errno) {
-		case EAGAIN:
-		case EINTR:
-			perror("recv");
+		if (errno == EAGAIN || errno == EWOULDBLOCK)
 			return 0;
-		}
+		else if (errno == EINTR)
+			return 1;
+		perror("recv");
 		return -1;
-	} else if (ret > sizeof(buffer)) {
-		return 0;
+	} else if ((size_t)ret >= sizeof(buffer)) {
+		printf("Netlink buffer overflow (%zi)\n", ret);
+		return -1;
 	}
 
+	printf("Read %zi bytes from netlink\n", ret);
 	struct nlmsghdr *nlh = (struct nlmsghdr *)buffer;
 
 	if (nlh->nlmsg_flags & MSG_TRUNC)
-		return 0;
+		return -1;
 
-	int len = ret;
+	for (int len = ret; NLMSG_OK(nlh, len); nlh = NLMSG_NEXT(nlh, len)) {
+		struct rtattr *rth;
+		int if_index;
+	     
+		switch (nlh->nlmsg_type) {
 
-	while ((NLMSG_OK(nlh, len)) && (nlh->nlmsg_type != NLMSG_DONE)) {
-		if ((nlh->nlmsg_type == RTM_NEWLINK) ||
-		    (nlh->nlmsg_type == RTM_DELLINK)) {
-			struct ifinfomsg *retinfo = NLMSG_DATA(nlh);
-			struct rtattr *retrta = IFLA_RTA(retinfo);
-			int attlen = IFLA_PAYLOAD(nlh);
+		case RTM_NEWLINK:
+			_fallthrough_;
+		case RTM_DELLINK:
+			struct ifinfomsg *ifi = NLMSG_DATA(nlh);
+			char if_name[128];
+			rth = IFLA_RTA(ifi);
+			if_index = ifi->ifi_index;
 
-			int if_index = retinfo->ifi_index;
-			char if_name[128] = {0, };
-			while (RTA_OK(retrta, attlen)) {
-				if (retrta->rta_type == IFLA_IFNAME)
-					strcpy(if_name, RTA_DATA(retrta));
-				retrta = RTA_NEXT(retrta, attlen);
+			for (int rtl = IFLA_PAYLOAD(nlh); RTA_OK(rth, rtl); rth = RTA_NEXT(rth, rtl)) {
+				if (rth->rta_type == IFLA_IFNAME)
+					strcpy(if_name, RTA_DATA(rth));
 			}
 
 			if (nlh->nlmsg_type == RTM_NEWLINK) {
@@ -270,31 +277,54 @@ read_netlink(int fd)
 				printf("Deleted interface %s, index %i\n", if_name, if_index);
 				netdev_del(if_index);
 			}
-		}
+			break;
 
-		if ((nlh->nlmsg_type == RTM_NEWADDR) ||
-		    (nlh->nlmsg_type == RTM_DELADDR)) {
+		case RTM_NEWADDR:
+			_fallthrough_;
+		case RTM_DELADDR:
+			struct ifaddrmsg *ifa = NLMSG_DATA(nlh);
+			char if_addr[1024];
+			rth = IFA_RTA(ifa);
+			if_index = ifa->ifa_index;
 
-			struct ifaddrmsg *ifa = (struct ifaddrmsg *)NLMSG_DATA(nlh);
-			struct rtattr *rth = IFA_RTA(ifa);
-			int rtl = IFA_PAYLOAD(nlh);
+			for (int rtl = IFA_PAYLOAD(nlh); RTA_OK(rth, rtl); rth = RTA_NEXT(rth, rtl)) {
+				if (rth->rta_type != IFA_LOCAL)
+					continue;
 
-			while (rtl && RTA_OK(rth, rtl)) {
-				if (rth->rta_type == IFA_LOCAL) {
-					char tmp[1024];
-					if (inet_ntop(ifa->ifa_family, RTA_DATA(rth), tmp, sizeof(tmp))) {
-						if (nlh->nlmsg_type == RTM_NEWADDR)
-							netdev_add_addr(ifa->ifa_index, tmp);
-						else
-							netdev_del_addr(ifa->ifa_index, tmp);
-					}
-				}
-				rth = RTA_NEXT(rth, rtl);
+				if (!inet_ntop(ifa->ifa_family, RTA_DATA(rth), if_addr, sizeof(if_addr)))
+					continue;
+
+				if (nlh->nlmsg_type == RTM_NEWADDR)
+					netdev_add_addr(if_index, if_addr);
+				else
+					netdev_del_addr(if_index, if_addr);
 			}
+			break;
+
+		case NLMSG_DONE:
+			break;
+
+		default:
+			printf("Unhandled netlink type: %i\n", nlh->nlmsg_type);
+			break;
 		}
-		nlh = NLMSG_NEXT(nlh, len);
 	}
-	return 0;
+
+	return 1;
+}
+
+static int
+read_netlink(int nfd)
+{
+	int ret;
+
+	while (true) {
+		ret = read_netlink_once(nfd);
+		if (ret <= 0)
+			break;
+	}
+
+	return ret;
 }
 
 static int
@@ -427,7 +457,6 @@ event_loop()
 		printf("FD is %i\n", ev.data.fd);
 
 		if (ev.data.fd == nfd) {
-			printf("Netlink data is available now\n");
 			read_netlink(nfd);
 			arm_timerfd(tfd);
 
