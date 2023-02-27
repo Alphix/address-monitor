@@ -2,9 +2,9 @@
 #ifndef fooutilshfoo
 #define fooutilshfoo
 
-#define _unused_       __attribute__((__unused__))
-#define _noreturn_ __attribute__((__noreturn__))
-#define _fallthrough_  __attribute__((__fallthrough__))
+#define _unused_	__attribute__((__unused__))
+#define _noreturn_	__attribute__((__noreturn__))
+#define _fallthrough_	__attribute__((__fallthrough__))
 
 #include "list.h"
 

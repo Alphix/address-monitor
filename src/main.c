@@ -33,6 +33,95 @@ struct netdev {
 };
 
 static int
+netdev_add(int index, const char *name)
+{
+	struct netdev *dev;
+
+	list_for_each_entry(dev, &netdevs, list) {
+		if (dev->index != index)
+			continue;
+		if (empty_str(dev->name) && !empty_str(name))
+			dev->name = strdup(name);
+		return 0;
+	}
+
+	dev = malloc(sizeof(*dev));
+	dev->index = index;
+	dev->name = strdup(name);
+	dev->monitored = true;
+	list_add(&dev->list, &netdevs);
+	return 0;
+}
+
+static int
+netdev_add_addr(int index, const char *addr)
+{
+	struct netdev *dev;
+
+	list_for_each_entry(dev, &netdevs, list) {
+		if (dev->index != index)
+			continue;
+		printf("Address added to interface %s (%i): %s\n",
+		       dev->name, dev->index, addr);
+		return 0;
+	}
+
+	printf("Address added to unknown interface %i: %s\n", index, addr);
+	return -1;
+}
+
+static unsigned
+netdev_del(int index)
+{
+	struct netdev *dev, *tmp;
+	unsigned ret = 0;
+
+	list_for_each_entry_safe(dev, tmp, &netdevs, list) {
+		if (dev->index != index)
+			continue;
+		list_del(&dev->list);
+		free(dev->name);
+		free(dev);
+		ret++;
+	}
+
+	return ret;
+}
+
+static unsigned
+netdev_del_all()
+{
+	struct netdev *dev, *tmp;
+	unsigned ret = 0;
+
+	list_for_each_entry_safe(dev, tmp, &netdevs, list) {
+		list_del(&dev->list);
+		free(dev->name);
+		free(dev);
+		ret++;
+	}
+
+	return ret;
+}
+
+static int
+netdev_del_addr(int index, const char *addr)
+{
+	struct netdev *dev;
+
+	list_for_each_entry(dev, &netdevs, list) {
+		if (dev->index != index)
+			continue;
+		printf("Address deleted from interface %s (%i): %s\n",
+		       dev->name, dev->index, addr);
+		return 0;
+	}
+
+	printf("Address deleted from unknown interface %i: %s\n", index, addr);
+	return -1;
+}
+
+static int
 setup_timerfd()
 {
 	int fd;
@@ -135,7 +224,6 @@ read_netlink(int fd)
 {
 	char buffer[16 * 1024];
 
-	printf("Reading netlink\n");
 	ssize_t ret = recv(fd, buffer, sizeof(buffer), 0);
 	printf("Read netlink: %i\n", (int)ret);
 
@@ -163,32 +251,25 @@ read_netlink(int fd)
 	while ((NLMSG_OK(nlh, len)) && (nlh->nlmsg_type != NLMSG_DONE)) {
 		if ((nlh->nlmsg_type == RTM_NEWLINK) ||
 		    (nlh->nlmsg_type == RTM_DELLINK)) {
+			struct ifinfomsg *retinfo = NLMSG_DATA(nlh);
+			struct rtattr *retrta = IFLA_RTA(retinfo);
+			int attlen = IFLA_PAYLOAD(nlh);
 
-			int attlen;
-			struct rtattr *retrta;
-			struct ifinfomsg *retinfo;
-			retinfo = NLMSG_DATA(nlh);
-			if (nlh->nlmsg_type == RTM_NEWLINK) {
-				printf("Added interface, index %i\n", retinfo->ifi_index);
-			} else {
-				printf("Deleted interface, index %i\n", retinfo->ifi_index);
-			}
-			retrta = IFLA_RTA(retinfo);
-			attlen = IFLA_PAYLOAD(nlh);
-			char prname[128] = {0, };
+			int if_index = retinfo->ifi_index;
+			char if_name[128] = {0, };
 			while (RTA_OK(retrta, attlen)) {
-				if (retrta->rta_type == IFLA_IFNAME) {
-					strcpy(prname, RTA_DATA(retrta));
-					printf("    Name: %s\n", prname);
-				}
+				if (retrta->rta_type == IFLA_IFNAME)
+					strcpy(if_name, RTA_DATA(retrta));
 				retrta = RTA_NEXT(retrta, attlen);
 			}
 
-			struct netdev *dev = malloc(sizeof(*dev));
-			dev->index = retinfo->ifi_index;
-			dev->name = strdup(prname);
-			dev->monitored = true;
-			list_add(&dev->list, &netdevs);
+			if (nlh->nlmsg_type == RTM_NEWLINK) {
+				printf("Added interface %s, index %i\n", if_name, if_index);
+				netdev_add(if_index, if_name);
+			} else {
+				printf("Deleted interface %s, index %i\n", if_name, if_index);
+				netdev_del(if_index);
+			}
 		}
 
 		if ((nlh->nlmsg_type == RTM_NEWADDR) ||
@@ -201,8 +282,12 @@ read_netlink(int fd)
 			while (rtl && RTA_OK(rth, rtl)) {
 				if (rth->rta_type == IFA_LOCAL) {
 					char tmp[1024];
-					if (inet_ntop(ifa->ifa_family, RTA_DATA(rth), tmp, sizeof(tmp)))
-						printf("%i: %s %s\n", ifa->ifa_index, (nlh->nlmsg_type == RTM_NEWADDR) ? "ADD" : "DEL", tmp);
+					if (inet_ntop(ifa->ifa_family, RTA_DATA(rth), tmp, sizeof(tmp))) {
+						if (nlh->nlmsg_type == RTM_NEWADDR)
+							netdev_add_addr(ifa->ifa_index, tmp);
+						else
+							netdev_del_addr(ifa->ifa_index, tmp);
+					}
 				}
 				rth = RTA_NEXT(rth, rtl);
 			}
@@ -308,14 +393,14 @@ epoll_monitor(int efd, int fd)
 	return ret;
 }
 
-int
-main(_unused_ int argc, _unused_ char **argv)
+static int
+event_loop()
 {
-	int efd;
-	int sfd = setup_signalfd();
-	int nfd = setup_netlinkfd();
-	int tfd = setup_timerfd();
-	int cfd;
+	_cleanup_close_ int efd = -1;
+	_cleanup_close_ int sfd = setup_signalfd();
+	_cleanup_close_ int nfd = setup_netlinkfd();
+	_cleanup_close_ int tfd = setup_timerfd();
+	_cleanup_close_ int cfd = -1;
 
 	efd = epoll_create1(EPOLL_CLOEXEC);
 	if (efd < 0) {
@@ -362,5 +447,22 @@ main(_unused_ int argc, _unused_ char **argv)
 		}
 	}
 
+	netdev_del_all();
 	return 0;
 }
+
+int
+main(_unused_ int argc, _unused_ char **argv)
+{
+	unsigned count = 0;
+
+	while (true) {
+		quit = 0;
+		event_loop();
+		printf("LOOP EXIT\n");
+		count++;
+		if (count > 3)
+			break;
+	}
+}
+
