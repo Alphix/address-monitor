@@ -57,6 +57,40 @@ netdev_add(int index, const char *name)
 	return 0;
 }
 
+static unsigned
+netdev_del(int index)
+{
+	struct netdev *dev, *tmp;
+	unsigned r = 0;
+
+	list_for_each_entry_safe(dev, tmp, &netdevs, list) {
+		if (dev->index != index)
+			continue;
+		list_del(&dev->list);
+		free(dev->name);
+		free(dev);
+		r++;
+	}
+
+	return r;
+}
+
+static unsigned
+netdev_del_all()
+{
+	struct netdev *dev, *tmp;
+	unsigned r = 0;
+
+	list_for_each_entry_safe(dev, tmp, &netdevs, list) {
+		list_del(&dev->list);
+		free(dev->name);
+		free(dev);
+		r++;
+	}
+
+	return r;
+}
+
 static int
 netdev_add_addr(int index, const char *addr)
 {
@@ -72,40 +106,6 @@ netdev_add_addr(int index, const char *addr)
 
 	printf("Address added to unknown interface %i: %s\n", index, addr);
 	return -1;
-}
-
-static unsigned
-netdev_del(int index)
-{
-	struct netdev *dev, *tmp;
-	unsigned ret = 0;
-
-	list_for_each_entry_safe(dev, tmp, &netdevs, list) {
-		if (dev->index != index)
-			continue;
-		list_del(&dev->list);
-		free(dev->name);
-		free(dev);
-		ret++;
-	}
-
-	return ret;
-}
-
-static unsigned
-netdev_del_all()
-{
-	struct netdev *dev, *tmp;
-	unsigned ret = 0;
-
-	list_for_each_entry_safe(dev, tmp, &netdevs, list) {
-		list_del(&dev->list);
-		free(dev->name);
-		free(dev);
-		ret++;
-	}
-
-	return ret;
 }
 
 static int
@@ -125,104 +125,6 @@ netdev_del_addr(int index, const char *addr)
 	return -1;
 }
 
-static int
-setup_timerfd()
-{
-	int fd;
-
-	fd = timerfd_create(CLOCK_BOOTTIME, TFD_NONBLOCK | TFD_CLOEXEC);
-	if (fd < 0) {
-		perror("timerfd_create");
-		return -1;
-	}
-
-	return fd;
-}
-
-static int
-arm_timerfd(int tfd)
-{
-	struct itimerspec new_value;
-	struct itimerspec old_value;
-
-	new_value.it_value.tv_sec = 10;
-	new_value.it_value.tv_nsec = 0;
-	new_value.it_interval.tv_sec = 0;
-	new_value.it_interval.tv_nsec = 0;
-
-	timerfd_settime(tfd, 0, &new_value, &old_value);
-	return 0;
-}
-
-static int
-read_timerfd(int tfd)
-{
-	uint64_t exp;
-	ssize_t ret;
-
-	ret = read(tfd, &exp, sizeof(exp));
-	if (ret != sizeof(exp))
-		perror("read");
-	else
-		printf("Timer expiry: %" PRIu64 "\n", exp);
-	return 0;
-}
-
-static void
-get_linknames(int sock)
-{
-	// Our message will be a header followed by a link payload
-	struct {
-	    struct nlmsghdr nlhdr;
-	    struct ifinfomsg infomsg;
-	} msg;
-
-	size_t msglen = NLMSG_LENGTH(sizeof(struct ifinfomsg));
-
-	// Fill in the message
-	// NLM_F_REQUEST means we are asking the kernel for data
-	// NLM_F_ROOT means provide all the addresses
-	// RTM_GETLINK means we want link information
-	// AF_UNSPEC means any kind of link
-	memset(&msg, 0, sizeof(msg));
-	msg.nlhdr.nlmsg_len    = msglen;
-	msg.nlhdr.nlmsg_flags  = NLM_F_REQUEST | NLM_F_ROOT;
-	msg.nlhdr.nlmsg_type   = RTM_GETLINK;
-	msg.infomsg.ifi_family = AF_UNSPEC;
-
-	ssize_t ret;
-
-	ret = send(sock, &msg, msglen, 0);
-	if (ret < 0 || (size_t)ret != msglen) {
-		fprintf(stderr, "Error sending netlink msg\n");
-	}
-}
-
-static int
-setup_netlinkfd()
-{
-	int fd = socket(PF_NETLINK, SOCK_RAW | SOCK_NONBLOCK | SOCK_CLOEXEC, NETLINK_ROUTE);
-
-	if (fd == -1) {
-		perror("socket");
-		return 1;
-	}
-
-	struct sockaddr_nl snl = {
-		.nl_family = AF_NETLINK,
-		.nl_groups = RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR,
-	};
-
-	if (bind(fd, (struct sockaddr *)&snl, sizeof(snl)) == -1) {
-		perror("bind");
-		return 1;
-	}
-
-	get_linknames(fd);
-
-	return fd;
-}
-
 /*
  * Return values:
  * < 0 = error
@@ -230,7 +132,7 @@ setup_netlinkfd()
  * > 0 = read again
  */
 static int
-read_netlinkfd_once(int nfd)
+netlink_read_once(int nfd)
 {
 	char buffer[16 * 1024];
 	ssize_t r;
@@ -319,36 +221,74 @@ read_netlinkfd_once(int nfd)
 }
 
 static int
-read_netlinkfd(int nfd)
+netlink_read(int nfd)
 {
-	int ret;
+	int r;
 
 	while (true) {
-		ret = read_netlinkfd_once(nfd);
-		if (ret <= 0)
+		r = netlink_read_once(nfd);
+		if (r <= 0)
 			break;
 	}
 
-	return ret;
+	return r;
 }
 
 static int
-setup_signalfd()
+netlink_get_names(int sock)
 {
-	int ret;
-	sigset_t sigset;
+	struct {
+	    struct nlmsghdr nlhdr;
+	    struct ifinfomsg infomsg;
+	} msg;
+	size_t msglen = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+	ssize_t r;
 
-	ret = sigfillset(&sigset);
-	if (ret < 0)
-		perror("sigfillset");
+	// NLM_F_REQUEST - ask the kernel for data
+	// NLM_F_ROOT    - provide all the addresses
+	// RTM_GETLINK   - link information
+	// AF_UNSPEC     - any kind of link
+	memset(&msg, 0, sizeof(msg));
+	msg.nlhdr.nlmsg_len    = msglen;
+	msg.nlhdr.nlmsg_flags  = NLM_F_REQUEST | NLM_F_ROOT;
+	msg.nlhdr.nlmsg_type   = RTM_GETLINK;
+	msg.infomsg.ifi_family = AF_UNSPEC;
 
-	ret = sigprocmask(SIG_BLOCK, &sigset, NULL);
-	if (ret < 0)
-		perror("sigprocmask");
+	r = send(sock, &msg, msglen, 0);
+	if (r < 0 || (size_t)r != msglen) {
+		fprintf(stderr, "Error sending netlink msg\n");
+	}
 
-	int fd = signalfd(-1, &sigset, SFD_NONBLOCK | SFD_CLOEXEC);
-	if (fd < 0)
-		perror("signalfd");
+	return r;
+}
+
+static int
+netlink_init()
+{
+	int fd;
+	struct sockaddr_nl snl = {
+		.nl_family = AF_NETLINK,
+		.nl_groups = RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR,
+	};
+
+	fd = socket(PF_NETLINK, SOCK_RAW | SOCK_NONBLOCK | SOCK_CLOEXEC, NETLINK_ROUTE);
+	if (fd < 0) {
+		perror("netlink socket");
+		return -1;
+	}
+
+	if (bind(fd, (struct sockaddr *)&snl, sizeof(snl)) < 0) {
+		perror("bind");
+		/* FIXME: add xclose */
+		close(fd);
+		return -1;
+	}
+
+	if (netlink_get_names(fd) < 0) {
+		/* FIXME: add xclose */
+		close(fd);
+		return -1;
+	}
 
 	return fd;
 }
@@ -360,7 +300,80 @@ setup_signalfd()
  * > 0 = read again
  */
 static int
-read_signalfd_once(int sfd)
+timerfd_read_once(int tfd)
+{
+	uint64_t exp;
+	ssize_t r;
+
+	r = read(tfd, &exp, sizeof(exp));
+	if (r == 0) {
+		return 0;
+	} else if (r < 0) {
+		if (errno == EAGAIN || errno == EWOULDBLOCK)
+			return 0;
+		else if (errno == EINTR)
+			return 1;
+		perror("read timerfd");
+		return -1;
+	} else if ((size_t)r != sizeof(exp)) {
+		printf("timerfd weird read size: %zi\n", r);
+		return -1;
+	}
+
+	printf("Timer expiry: %" PRIu64 "\n", exp);
+	return 1;
+}
+
+static int
+timerfd_read(int tfd)
+{
+	int r;
+
+	while (true) {
+		r = timerfd_read_once(tfd);
+		if (r <= 0)
+			break;
+	}
+
+	return r;
+}
+
+static int
+timerfd_arm(int tfd)
+{
+	struct itimerspec new_value;
+	struct itimerspec old_value;
+
+	new_value.it_value.tv_sec = 10;
+	new_value.it_value.tv_nsec = 0;
+	new_value.it_interval.tv_sec = 0;
+	new_value.it_interval.tv_nsec = 0;
+
+	return timerfd_settime(tfd, 0, &new_value, &old_value);
+}
+
+static int
+timerfd_init()
+{
+	int fd;
+
+	fd = timerfd_create(CLOCK_BOOTTIME, TFD_NONBLOCK | TFD_CLOEXEC);
+	if (fd < 0) {
+		perror("timerfd_create");
+		return -1;
+	}
+
+	return fd;
+}
+
+/*
+ * Return values:
+ * < 0 = error
+ *   0 = done
+ * > 0 = read again
+ */
+static int
+signalfd_read_once(int sfd)
 {
 	struct signalfd_siginfo sig;
 	ssize_t r;
@@ -398,17 +411,38 @@ read_signalfd_once(int sfd)
 }
 
 static int
-read_signalfd(int sfd)
+signalfd_read(int sfd)
 {
-	int ret;
+	int r;
 
 	while (true) {
-		ret = read_signalfd_once(sfd);
-		if (ret <= 0)
+		r = signalfd_read_once(sfd);
+		if (r <= 0)
 			break;
 	}
 
-	return ret;
+	return r;
+}
+
+static int
+signalfd_init()
+{
+	int r;
+	sigset_t sigset;
+
+	r = sigfillset(&sigset);
+	if (r < 0)
+		perror("sigfillset");
+
+	r = sigprocmask(SIG_BLOCK, &sigset, NULL);
+	if (r < 0)
+		perror("sigprocmask");
+
+	int fd = signalfd(-1, &sigset, SFD_NONBLOCK | SFD_CLOEXEC);
+	if (fd < 0)
+		perror("signalfd");
+
+	return fd;
 }
 
 static pid_t
@@ -451,24 +485,24 @@ exec_helper() {
 static int
 epoll_monitor(int efd, int fd)
 {
-	int ret;
+	int r;
 	struct epoll_event ev = {
 		.events = EPOLLIN | EPOLLRDHUP | EPOLLPRI | EPOLLERR | EPOLLHUP | EPOLLET,
 		.data.fd = fd,
 	};
-	ret = epoll_ctl(efd, EPOLL_CTL_ADD, fd, &ev);
-	if (ret < 0)
+	r = epoll_ctl(efd, EPOLL_CTL_ADD, fd, &ev);
+	if (r < 0)
 		perror("epoll_ctl");
-	return ret;
+	return r;
 }
 
 static int
 event_loop()
 {
 	_cleanup_close_ int efd = -1;
-	_cleanup_close_ int sfd = setup_signalfd();
-	_cleanup_close_ int nfd = setup_netlinkfd();
-	_cleanup_close_ int tfd = setup_timerfd();
+	_cleanup_close_ int sfd = signalfd_init();
+	_cleanup_close_ int nfd = netlink_init();
+	_cleanup_close_ int tfd = timerfd_init();
 	_cleanup_close_ int cfd = -1;
 
 	efd = epoll_create1(EPOLL_CLOEXEC);
@@ -485,23 +519,24 @@ event_loop()
 
 	while (state == RUNNING) {
 		struct epoll_event ev;
-		int ret = epoll_wait(efd, &ev, 1, -1);
-		if (ret <= 0) {
+		int r = epoll_wait(efd, &ev, 1, -1);
+		if (r <= 0) {
 			perror("epoll");
 			continue;
-		} else if (ret == 0) {
+		} else if (r == 0) {
 			continue;
 		}
 
-		printf("FD is %i\n", ev.data.fd);
+		printf("Receved event on fd %i\n", ev.data.fd);
 
+		/* FIXME: check other epoll events */
 		if (ev.data.fd == nfd) {
-			read_netlinkfd(nfd);
-			arm_timerfd(tfd);
+			netlink_read(nfd);
+			/* FIXME: move to add/del addr logic */
+			timerfd_arm(tfd);
 
 		} else if (ev.data.fd == tfd) {
-			printf("Timer data is available now\n");
-			read_timerfd(tfd);
+			timerfd_read(tfd);
 			cfd = exec_helper();
 			printf("Child pidfd = %i\n", cfd);
 			struct netdev *dev;
@@ -510,7 +545,7 @@ event_loop()
 			}
 
 		} else if (ev.data.fd == sfd) {
-			read_signalfd(sfd);
+			signalfd_read(sfd);
 		}
 	}
 
