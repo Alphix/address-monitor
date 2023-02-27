@@ -178,7 +178,7 @@ netlink_read_once(int nfd)
 {
 	char buffer[16 * 1024];
 	ssize_t r;
-       
+
 	r = recv(nfd, buffer, sizeof(buffer), 0);
 	if (r == 0) {
 		return 0;
@@ -203,7 +203,7 @@ netlink_read_once(int nfd)
 	for (int len = r; NLMSG_OK(nlh, len); nlh = NLMSG_NEXT(nlh, len)) {
 		struct rtattr *rth;
 		int if_index;
-	     
+
 		printf("Netlink msg type: %i\n", nlh->nlmsg_type);
 		switch (nlh->nlmsg_type) {
 
@@ -664,7 +664,7 @@ event_loop()
 		if (pending_changes)
 			timerfd_arm(tfd);
 
-	       	r = epoll_wait(efd, &ev, 1, -1);
+		r = epoll_wait(efd, &ev, 1, -1);
 		if (r < 0) {
 			if (errno == EINTR)
 				continue;
