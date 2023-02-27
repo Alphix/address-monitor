@@ -17,6 +17,7 @@
 #include <sys/timerfd.h>
 #include <sys/signalfd.h>
 #include <sys/epoll.h>
+#include <sys/wait.h>
 
 #include "config.h"
 #include "utils.h"
@@ -445,6 +446,111 @@ signalfd_init()
 	return fd;
 }
 
+/*
+ * Return values:
+ * < 0 = error
+ *   0 = done
+ * > 0 = read again
+ */
+static int
+childfd_wait_once(int *cfd)
+{
+	siginfo_t info;
+	int r;
+
+	if (*cfd < 0)
+		return 0;
+
+	r = waitid(P_PIDFD, *cfd, &info, WEXITED | WSTOPPED | WCONTINUED | WNOHANG);
+	if (r < 0) {
+		if (errno == EAGAIN)
+			return 0;
+		else if (errno == EINTR)
+			return 1;
+
+		perror("waitid");
+		close(*cfd);
+		*cfd = -1;
+		return -1;
+	}
+
+	switch (info.si_code) {
+	case CLD_EXITED:
+		printf("Child exited, status: %i\n", info.si_status);
+		break;
+	case CLD_KILLED:
+		printf("Child killed, signal: %i\n", info.si_status);
+		break;
+	case CLD_DUMPED:
+		printf("Child dumped, signal: %i\n", info.si_status);
+		break;
+	case CLD_STOPPED:
+		printf("Child stopped, signal: %i\n", info.si_status);
+		break;
+	case CLD_CONTINUED:
+		printf("Child continued, signal: %i\n", info.si_status);
+		break;
+	case CLD_TRAPPED:
+		printf("Traced child has trapped, signal: %i\n", info.si_status);
+		break;
+	default:
+		printf("Unknown child state: %i\n", info.si_code);
+		break;
+	}
+
+	close(*cfd);
+	*cfd = -1;
+	return 0;
+}
+
+static int
+childfd_wait(int *cfd)
+{
+	int r;
+
+	while (true) {
+		r = childfd_wait_once(cfd);
+		if (r <= 0)
+			break;
+	}
+
+	return r;
+}
+
+static int
+sys_pidfd_send_signal(int pidfd, int signal)
+{
+	return syscall(SYS_pidfd_send_signal, pidfd, signal, NULL, 0);
+}
+
+static void
+childfd_kill(int *cfd)
+{
+	childfd_wait(cfd);
+	if (*cfd < 0)
+		return;
+
+	sleep(5);
+	childfd_wait(cfd);
+	if (*cfd < 0)
+		return;
+
+	sys_pidfd_send_signal(*cfd, SIGTERM);
+	sleep(5);
+	childfd_wait(cfd);
+	if (*cfd < 0)
+		return;
+
+	sys_pidfd_send_signal(*cfd, SIGKILL);
+	sleep(5);
+	childfd_wait(cfd);
+	if (*cfd < 0)
+		return;
+
+	close(*cfd);
+	*cfd = -1;
+}
+
 static pid_t
 sys_clone3(struct clone_args *args)
 {
@@ -459,10 +565,10 @@ exec_helper() {
 	int pidfd;
 
 	struct clone_args args = {
-		/* CLONE_PIDFD */
 		.pidfd = ptr_to_u64(&pidfd),
 		.flags = CLONE_PIDFD | CLONE_CLEAR_SIGHAND,
-		.exit_signal = 0,
+		/* setting this to zero breaks waitid */
+		.exit_signal = SIGCHLD,
 	};
 	pid = sys_clone3(&args);
 
@@ -472,7 +578,7 @@ exec_helper() {
 	} else if (pid == 0) {
 		/* Child */
 		printf("In child process. Sleeping..\n");
-		sleep(5);
+		sleep(10);
 		printf("Exiting child process.\n");
 		exit(0);
 	} else {
@@ -503,7 +609,7 @@ event_loop()
 	_cleanup_close_ int sfd = signalfd_init();
 	_cleanup_close_ int nfd = netlink_init();
 	_cleanup_close_ int tfd = timerfd_init();
-	_cleanup_close_ int cfd = -1;
+	int cfd = -1;
 
 	efd = epoll_create1(EPOLL_CLOEXEC);
 	if (efd < 0) {
@@ -529,7 +635,7 @@ event_loop()
 
 		printf("Receved event on fd %i\n", ev.data.fd);
 
-		/* FIXME: check other epoll events */
+		/* FIXME: check other epoll events and that ev.data.fd >= 0 */
 		if (ev.data.fd == nfd) {
 			netlink_read(nfd);
 			/* FIXME: move to add/del addr logic */
@@ -543,12 +649,17 @@ event_loop()
 			list_for_each_entry(dev, &netdevs, list) {
 				printf("Got a netdev, index %i, name %s\n", dev->index, dev->name);
 			}
+			epoll_monitor(efd, cfd);
 
 		} else if (ev.data.fd == sfd) {
 			signalfd_read(sfd);
+
+		} else if (ev.data.fd == cfd) {
+			childfd_wait(&cfd);
 		}
 	}
 
+	childfd_kill(&cfd);
 	netdev_del_all();
 	return 0;
 }
