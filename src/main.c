@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdbool.h>
+#include <getopt.h>
 
 #include <arpa/inet.h>
 #include <linux/netlink.h>
@@ -681,10 +682,88 @@ event_loop()
 	return 0;
 }
 
+_noreturn_ static void
+usage(bool invalid)
+{
+	if (invalid)
+		printf("Invalid option(s)\n");
+
+	printf("Usage: %s [OPTION...] [IFNAME...]\n"
+	       "\n"
+	       "Valid options:\n"
+	       "  -c, --cfg=FILE\tread configuration from FILE\n"
+	       "  -l, --logfile=FILE\tlog to FILE instead of stderr\n"
+	       "  -h, --help\t\tprint this information\n"
+	       "  -v, --verbose\t\tenable verbose logging\n"
+	       "  -d, --debug\t\tenable debug logging\n"
+	       "\n"
+	       "When IFNAME(s) are provided, monitor the given interfaces.\n"
+	       "Otherwise, all interfaces are monitored.\n",
+	       program_invocation_short_name);
+
+	exit(invalid ? EXIT_FAILURE : EXIT_SUCCESS);
+}
+
+static void
+config_init(int argc, char **argv)
+{
+	int c;
+
+	while (true) {
+		int option_index = 0;
+		static struct option long_options[] = {
+			{ "cfg",	required_argument,	0, 'c' },
+			{ "logfile",	required_argument,	0, 'l' },
+			{ "help",	no_argument,		0, 'h' },
+			{ "verbose",	no_argument,		0, 'v' },
+			{ "debug",	no_argument,		0, 'd' },
+			{ 0,		0,			0,  0  },
+		};
+
+		c = getopt_long(argc, argv, ":c:l:hvd", long_options, &option_index);
+		if (c == -1)
+			break;
+
+		switch (c) {
+		case 'c':
+			printf("Config dir: %s\n", optarg);
+			break;
+		case 'l':
+			printf("Logfile: %s\n", optarg);
+			break;
+		case 'v':
+			printf("Verbose output\n");
+			break;
+		case 'd':
+			printf("Debug output\n");
+			break;
+		case 'h':
+			printf("Help output\n");
+			usage(false);
+			break;
+		default:
+			printf("Unknown option\n");
+			usage(true);
+			break;
+		}
+	}
+
+	if (optind < argc) {
+		while (optind < argc) {
+			printf("Extra argument: %s\n", argv[optind]);
+			optind++;
+		}
+	}
+}
+
 int
-main(_unused_ int argc, _unused_ char **argv)
+main(int argc, char **argv)
 {
 	unsigned count = 0;
+
+	// FIXME: assert_die(argc > 0 && argv, "invalid arguments");
+
+	config_init(argc, argv);
 
 	while (true) {
 		if (state == STOPPING)
