@@ -28,6 +28,8 @@ static enum states {
 	STOPPING,
 } state = RUNNING;
 
+static bool pending_changes = false;
+
 static LIST_HEAD(netdevs);
 
 struct netdev {
@@ -55,6 +57,8 @@ netdev_add(int index, const char *name)
 	dev->name = strdup(name);
 	dev->monitored = true;
 	list_add(&dev->list, &netdevs);
+
+	pending_changes = true;
 	return 0;
 }
 
@@ -73,6 +77,7 @@ netdev_del(int index)
 		r++;
 	}
 
+	pending_changes = true;
 	return r;
 }
 
@@ -89,6 +94,7 @@ netdev_del_all()
 		r++;
 	}
 
+	pending_changes = true;
 	return r;
 }
 
@@ -106,6 +112,7 @@ netdev_add_addr(int index, const char *addr)
 	}
 
 	printf("Address added to unknown interface %i: %s\n", index, addr);
+	pending_changes = true;
 	return -1;
 }
 
@@ -123,6 +130,7 @@ netdev_del_addr(int index, const char *addr)
 	}
 
 	printf("Address deleted from unknown interface %i: %s\n", index, addr);
+	pending_changes = true;
 	return -1;
 }
 
@@ -163,6 +171,7 @@ netlink_read_once(int nfd)
 		struct rtattr *rth;
 		int if_index;
 	     
+		printf("Netlink msg type: %i\n", nlh->nlmsg_type);
 		switch (nlh->nlmsg_type) {
 
 		case RTM_NEWLINK:
@@ -404,6 +413,13 @@ signalfd_read_once(int sfd)
 	case SIGHUP:
 		state = RELOADING;
 		break;
+	case SIGUSR1:
+		struct netdev *dev;
+		printf("Dumping list of known netdevs:\n");
+		list_for_each_entry(dev, &netdevs, list) {
+			printf("\tnetdev: index %i, name %s\n", dev->index, dev->name);
+		}
+		break;
 	default:
 		break;
 	}
@@ -567,7 +583,7 @@ exec_helper() {
 	struct clone_args args = {
 		.pidfd = ptr_to_u64(&pidfd),
 		.flags = CLONE_PIDFD | CLONE_CLEAR_SIGHAND,
-		/* setting this to zero breaks waitid */
+		/* setting exit_signal to zero breaks waitid */
 		.exit_signal = SIGCHLD,
 	};
 	pid = sys_clone3(&args);
@@ -584,6 +600,7 @@ exec_helper() {
 	} else {
 		/* Parent */
 		printf("Created child PID %d with pidfd %d\n", pid, pidfd);
+		pending_changes = false;
 		return pidfd;
 	}
 }
@@ -596,6 +613,7 @@ epoll_monitor(int efd, int fd)
 		.events = EPOLLIN | EPOLLRDHUP | EPOLLPRI | EPOLLERR | EPOLLHUP | EPOLLET,
 		.data.fd = fd,
 	};
+
 	r = epoll_ctl(efd, EPOLL_CTL_ADD, fd, &ev);
 	if (r < 0)
 		perror("epoll_ctl");
@@ -625,7 +643,12 @@ event_loop()
 
 	while (state == RUNNING) {
 		struct epoll_event ev;
-		int r = epoll_wait(efd, &ev, 1, -1);
+		int r;
+
+		if (pending_changes)
+			timerfd_arm(tfd);
+
+	       	r = epoll_wait(efd, &ev, 1, -1);
 		if (r <= 0) {
 			perror("epoll");
 			continue;
@@ -638,17 +661,11 @@ event_loop()
 		/* FIXME: check other epoll events and that ev.data.fd >= 0 */
 		if (ev.data.fd == nfd) {
 			netlink_read(nfd);
-			/* FIXME: move to add/del addr logic */
-			timerfd_arm(tfd);
 
 		} else if (ev.data.fd == tfd) {
 			timerfd_read(tfd);
 			cfd = exec_helper();
 			printf("Child pidfd = %i\n", cfd);
-			struct netdev *dev;
-			list_for_each_entry(dev, &netdevs, list) {
-				printf("Got a netdev, index %i, name %s\n", dev->index, dev->name);
-			}
 			epoll_monitor(efd, cfd);
 
 		} else if (ev.data.fd == sfd) {
@@ -673,6 +690,7 @@ main(_unused_ int argc, _unused_ char **argv)
 		if (state == STOPPING)
 			break;
 		state = RUNNING;
+		pending_changes = true;
 		event_loop();
 		printf("LOOP EXIT\n");
 		count++;
