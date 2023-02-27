@@ -26,6 +26,16 @@ static inline bool strcaseeq(const char *a, const char *b)
 	return strcasecmp(a, b) == 0;
 }
 
+static inline int sys_pidfd_send_signal(int pidfd, int signal)
+{
+	return syscall(SYS_pidfd_send_signal, pidfd, signal, NULL, 0);
+}
+
+static inline pid_t sys_clone3(struct clone_args *args)
+{
+	return (pid_t)syscall(SYS_clone3, args, sizeof(struct clone_args));
+}
+
 #define _cleanup_(x) __attribute__((cleanup(x)))
 
 static inline void closep(int *fd)

@@ -41,26 +41,39 @@ struct netdev {
 };
 
 static int
-netdev_add(int index, const char *name)
+netdev_del_addr(int index, const char *addr)
 {
 	struct netdev *dev;
 
 	list_for_each_entry(dev, &netdevs, list) {
 		if (dev->index != index)
 			continue;
-		if (empty_str(dev->name) && !empty_str(name))
-			dev->name = strdup(name);
+		printf("Address deleted from interface %s (%i): %s\n",
+		       dev->name, dev->index, addr);
 		return 0;
 	}
 
-	dev = malloc(sizeof(*dev));
-	dev->index = index;
-	dev->name = strdup(name);
-	dev->monitored = true;
-	list_add(&dev->list, &netdevs);
-
+	printf("Address deleted from unknown interface %i: %s\n", index, addr);
 	pending_changes = true;
-	return 0;
+	return -1;
+}
+
+static int
+netdev_add_addr(int index, const char *addr)
+{
+	struct netdev *dev;
+
+	list_for_each_entry(dev, &netdevs, list) {
+		if (dev->index != index)
+			continue;
+		printf("Address added to interface %s (%i): %s\n",
+		       dev->name, dev->index, addr);
+		return 0;
+	}
+
+	printf("Address added to unknown interface %i: %s\n", index, addr);
+	pending_changes = true;
+	return -1;
 }
 
 static unsigned
@@ -100,39 +113,26 @@ netdev_del_all()
 }
 
 static int
-netdev_add_addr(int index, const char *addr)
+netdev_add(int index, const char *name)
 {
 	struct netdev *dev;
 
 	list_for_each_entry(dev, &netdevs, list) {
 		if (dev->index != index)
 			continue;
-		printf("Address added to interface %s (%i): %s\n",
-		       dev->name, dev->index, addr);
+		if (empty_str(dev->name) && !empty_str(name))
+			dev->name = strdup(name);
 		return 0;
 	}
 
-	printf("Address added to unknown interface %i: %s\n", index, addr);
+	dev = malloc(sizeof(*dev));
+	dev->index = index;
+	dev->name = strdup(name);
+	dev->monitored = true;
+	list_add(&dev->list, &netdevs);
+
 	pending_changes = true;
-	return -1;
-}
-
-static int
-netdev_del_addr(int index, const char *addr)
-{
-	struct netdev *dev;
-
-	list_for_each_entry(dev, &netdevs, list) {
-		if (dev->index != index)
-			continue;
-		printf("Address deleted from interface %s (%i): %s\n",
-		       dev->name, dev->index, addr);
-		return 0;
-	}
-
-	printf("Address deleted from unknown interface %i: %s\n", index, addr);
-	pending_changes = true;
-	return -1;
+	return 0;
 }
 
 /*
@@ -538,12 +538,6 @@ childfd_wait(int *cfd)
 	return r;
 }
 
-static int
-sys_pidfd_send_signal(int pidfd, int signal)
-{
-	return syscall(SYS_pidfd_send_signal, pidfd, signal, NULL, 0);
-}
-
 static void
 childfd_kill(int *cfd)
 {
@@ -572,21 +566,14 @@ childfd_kill(int *cfd)
 	*cfd = -1;
 }
 
-static pid_t
-sys_clone3(struct clone_args *args)
-{
-	return (pid_t)syscall(SYS_clone3, args, sizeof(struct clone_args));
-}
-
-#define ptr_to_u64(ptr) ((__u64)((uintptr_t)(ptr)))
-
 static int
-exec_helper() {
+childfd_init(_unused_ const char *path)
+{
 	pid_t pid;
 	int pidfd;
 
 	struct clone_args args = {
-		.pidfd = ptr_to_u64(&pidfd),
+		.pidfd = (__u64)(uintptr_t)&pidfd,
 		.flags = CLONE_PIDFD | CLONE_CLEAR_SIGHAND,
 		/* setting exit_signal to zero breaks waitid */
 		.exit_signal = SIGCHLD,
@@ -611,7 +598,7 @@ exec_helper() {
 }
 
 static int
-epoll_monitor(int efd, int fd)
+epoll_add(int efd, int fd)
 {
 	int r;
 	struct epoll_event ev = {
@@ -640,9 +627,9 @@ event_loop()
 		exit(1);
 	}
 
-	epoll_monitor(efd, sfd);
-	epoll_monitor(efd, nfd);
-	epoll_monitor(efd, tfd);
+	epoll_add(efd, sfd);
+	epoll_add(efd, nfd);
+	epoll_add(efd, tfd);
 
 	printf("sfd %i nfd %i tfd %i\n", sfd, nfd, tfd);
 
@@ -654,24 +641,32 @@ event_loop()
 			timerfd_arm(tfd);
 
 	       	r = epoll_wait(efd, &ev, 1, -1);
-		if (r <= 0) {
-			perror("epoll");
-			continue;
+		if (r < 0) {
+			if (errno == EINTR)
+				continue;
+			perror("epoll_wait");
+			break;
 		} else if (r == 0) {
-			continue;
+			printf("Unexpected epoll_wait return value (0)\n");
+			break;
+		} else if (ev.data.fd < 0) {
+			printf("Unexpected epoll_wait return fd: %i\n", ev.data.fd);
+			break;
+		} else if (ev.events != EPOLLIN) {
+			printf("Unexpected epoll_wait return event: 0x%08" PRIx32 "\n", ev.events);
+			break;
 		}
 
 		printf("Received event on fd %i\n", ev.data.fd);
 
-		/* FIXME: check other epoll events and that ev.data.fd >= 0 */
 		if (ev.data.fd == nfd) {
 			netlink_read(nfd);
 
 		} else if (ev.data.fd == tfd) {
 			timerfd_read(tfd);
-			cfd = exec_helper();
+			cfd = childfd_init(NULL);
 			printf("Child pidfd = %i\n", cfd);
-			epoll_monitor(efd, cfd);
+			epoll_add(efd, cfd);
 
 		} else if (ev.data.fd == sfd) {
 			signalfd_read(sfd);
