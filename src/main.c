@@ -18,7 +18,8 @@
 #include <sys/signalfd.h>
 #include <sys/epoll.h>
 
-#include "list.h"
+#include "config.h"
+#include "utils.h"
 
 int quit = 0;
 
@@ -308,7 +309,7 @@ epoll_monitor(int efd, int fd)
 }
 
 int
-main(int argc, char **argv)
+main(_unused_ int argc, _unused_ char **argv)
 {
 	int efd;
 	int sfd = setup_signalfd();
