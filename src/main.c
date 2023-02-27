@@ -478,6 +478,7 @@ childfd_wait_once(int *cfd)
 	if (*cfd < 0)
 		return 0;
 
+	info.si_pid = 0;
 	r = waitid(P_PIDFD, *cfd, &info, WEXITED | WSTOPPED | WCONTINUED | WNOHANG);
 	if (r < 0) {
 		if (errno == EAGAIN)
@@ -490,6 +491,9 @@ childfd_wait_once(int *cfd)
 		*cfd = -1;
 		return -1;
 	}
+
+	if (info.si_pid == 0)
+		return 0;
 
 	switch (info.si_code) {
 	case CLD_EXITED:
@@ -657,7 +661,7 @@ event_loop()
 			continue;
 		}
 
-		printf("Receved event on fd %i\n", ev.data.fd);
+		printf("Received event on fd %i\n", ev.data.fd);
 
 		/* FIXME: check other epoll events and that ev.data.fd >= 0 */
 		if (ev.data.fd == nfd) {
