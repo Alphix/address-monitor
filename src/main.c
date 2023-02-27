@@ -31,6 +31,8 @@ static enum states {
 
 static bool pending_changes = false;
 
+static char **monitored_netdevs = NULL;
+
 static LIST_HEAD(netdevs);
 
 struct netdev {
@@ -50,10 +52,13 @@ netdev_del_addr(int index, const char *addr)
 			continue;
 		printf("Address deleted from interface %s (%i): %s\n",
 		       dev->name, dev->index, addr);
+		if (dev->monitored)
+			pending_changes = true;
 		return 0;
 	}
 
 	printf("Address deleted from unknown interface %i: %s\n", index, addr);
+	/* FIXME: review use of pending_changes */
 	pending_changes = true;
 	return -1;
 }
@@ -68,6 +73,8 @@ netdev_add_addr(int index, const char *addr)
 			continue;
 		printf("Address added to interface %s (%i): %s\n",
 		       dev->name, dev->index, addr);
+		if (dev->monitored)
+			pending_changes = true;
 		return 0;
 	}
 
@@ -85,6 +92,8 @@ netdev_del(int index)
 	list_for_each_entry_safe(dev, tmp, &netdevs, list) {
 		if (dev->index != index)
 			continue;
+		printf("Deleted interface %s, index %i (%smonitored)\n",
+		       dev->name, dev->index, dev->monitored ? "" : "not ");
 		list_del(&dev->list);
 		free(dev->name);
 		free(dev);
@@ -116,12 +125,24 @@ static int
 netdev_add(int index, const char *name)
 {
 	struct netdev *dev;
+	bool monitored = monitored_netdevs ? false : true;
+
+	if (monitored_netdevs && name) {
+		char **tmp;
+		for (tmp = monitored_netdevs; *tmp; tmp++) {
+			if (streq(*tmp, name)) {
+				monitored = true;
+				break;
+			}
+		}
+	}
 
 	list_for_each_entry(dev, &netdevs, list) {
 		if (dev->index != index)
 			continue;
 		if (empty_str(dev->name) && !empty_str(name))
 			dev->name = strdup(name);
+		dev->monitored = monitored;
 		return 0;
 	}
 
@@ -139,10 +160,10 @@ netdev_add(int index, const char *name)
 	}
 
 	dev->index = index;
-	dev->monitored = true;
+	dev->monitored = monitored;
 	list_add(&dev->list, &netdevs);
-
-	pending_changes = true;
+	printf("Added interface %s, index %i (%smonitored)\n",
+	       dev->name, dev->index, dev->monitored ? "" : "not ");
 	return 0;
 }
 
@@ -200,7 +221,6 @@ netlink_read_once(int nfd)
 			}
 
 			if (nlh->nlmsg_type == RTM_NEWLINK) {
-				printf("Added interface %s, index %i\n", if_name, if_index);
 				netdev_add(if_index, if_name);
 			} else {
 				printf("Deleted interface %s, index %i\n", if_name, if_index);
@@ -217,8 +237,10 @@ netlink_read_once(int nfd)
 			if_index = ifa->ifa_index;
 
 			for (int rtl = IFA_PAYLOAD(nlh); RTA_OK(rth, rtl); rth = RTA_NEXT(rth, rtl)) {
-				if (rth->rta_type != IFA_LOCAL)
+				if (rth->rta_type != IFA_LOCAL) {
+					printf("Got RTM_NEW/DELADDR with type: %i\n", (int)rth->rta_type);
 					continue;
+				}
 
 				if (!inet_ntop(ifa->ifa_family, RTA_DATA(rth), if_addr, sizeof(if_addr)))
 					continue;
@@ -282,11 +304,11 @@ netlink_get_names(int sock)
 static int
 netlink_init()
 {
-	int fd;
 	struct sockaddr_nl snl = {
 		.nl_family = AF_NETLINK,
 		.nl_groups = RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR,
 	};
+	int fd;
 
 	fd = socket(PF_NETLINK, SOCK_RAW | SOCK_NONBLOCK | SOCK_CLOEXEC, NETLINK_ROUTE);
 	if (fd < 0) {
@@ -358,13 +380,13 @@ timerfd_read(int tfd)
 static int
 timerfd_arm(int tfd)
 {
-	struct itimerspec new_value;
+	struct itimerspec new_value = {
+		.it_value.tv_sec = 10,
+		.it_value.tv_nsec = 0,
+		.it_interval.tv_sec = 0,
+		.it_interval.tv_nsec = 0,
+	};
 	struct itimerspec old_value;
-
-	new_value.it_value.tv_sec = 10;
-	new_value.it_value.tv_nsec = 0;
-	new_value.it_interval.tv_sec = 0;
-	new_value.it_interval.tv_nsec = 0;
 
 	return timerfd_settime(tfd, 0, &new_value, &old_value);
 }
@@ -451,8 +473,8 @@ signalfd_read(int sfd)
 static int
 signalfd_init()
 {
-	int r;
 	sigset_t sigset;
+	int r;
 
 	r = sigfillset(&sigset);
 	if (r < 0)
@@ -575,17 +597,16 @@ childfd_kill(int *cfd)
 static int
 childfd_init(_unused_ const char *path)
 {
-	pid_t pid;
 	int pidfd;
-
 	struct clone_args args = {
 		.pidfd = (__u64)(uintptr_t)&pidfd,
 		.flags = CLONE_PIDFD | CLONE_CLEAR_SIGHAND,
 		/* setting exit_signal to zero breaks waitid */
 		.exit_signal = SIGCHLD,
 	};
-	pid = sys_clone3(&args);
+	pid_t pid;
 
+	pid = sys_clone3(&args);
 	if (pid < 0) {
 		perror("clone3");
 		return -1;
@@ -606,11 +627,11 @@ childfd_init(_unused_ const char *path)
 static int
 epoll_add(int efd, int fd)
 {
-	int r;
 	struct epoll_event ev = {
 		.events = EPOLLIN | EPOLLRDHUP | EPOLLPRI | EPOLLERR | EPOLLHUP | EPOLLET,
 		.data.fd = fd,
 	};
+	int r;
 
 	r = epoll_ctl(efd, EPOLL_CTL_ADD, fd, &ev);
 	if (r < 0)
@@ -753,12 +774,8 @@ config_init(int argc, char **argv)
 		}
 	}
 
-	if (optind < argc) {
-		while (optind < argc) {
-			printf("Extra argument: %s\n", argv[optind]);
-			optind++;
-		}
-	}
+	if (optind < argc)
+		monitored_netdevs = &argv[optind];
 }
 
 int
