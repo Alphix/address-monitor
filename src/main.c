@@ -21,9 +21,13 @@
 #include "config.h"
 #include "utils.h"
 
-int quit = 0;
+static enum states {
+	RUNNING,
+	RELOADING,
+	STOPPING,
+} state = RUNNING;
 
-LIST_HEAD(netdevs);
+static LIST_HEAD(netdevs);
 
 struct netdev {
 	int index;
@@ -226,32 +230,33 @@ setup_netlinkfd()
  * > 0 = read again
  */
 static int
-read_netlink_once(int fd)
+read_netlinkfd_once(int nfd)
 {
 	char buffer[16 * 1024];
-	ssize_t ret = recv(fd, buffer, sizeof(buffer), 0);
-
-	if (ret == 0) {
+	ssize_t r;
+       
+	r = recv(nfd, buffer, sizeof(buffer), 0);
+	if (r == 0) {
 		return 0;
-	} else if (ret < 0) {
+	} else if (r < 0) {
 		if (errno == EAGAIN || errno == EWOULDBLOCK)
 			return 0;
 		else if (errno == EINTR)
 			return 1;
 		perror("recv");
 		return -1;
-	} else if ((size_t)ret >= sizeof(buffer)) {
-		printf("Netlink buffer overflow (%zi)\n", ret);
+	} else if ((size_t)r >= sizeof(buffer)) {
+		printf("Netlink buffer overflow (%zi)\n", r);
 		return -1;
 	}
 
-	printf("Read %zi bytes from netlink\n", ret);
+	printf("Read %zi bytes from netlink\n", r);
 	struct nlmsghdr *nlh = (struct nlmsghdr *)buffer;
 
 	if (nlh->nlmsg_flags & MSG_TRUNC)
 		return -1;
 
-	for (int len = ret; NLMSG_OK(nlh, len); nlh = NLMSG_NEXT(nlh, len)) {
+	for (int len = r; NLMSG_OK(nlh, len); nlh = NLMSG_NEXT(nlh, len)) {
 		struct rtattr *rth;
 		int if_index;
 	     
@@ -314,12 +319,12 @@ read_netlink_once(int fd)
 }
 
 static int
-read_netlink(int nfd)
+read_netlinkfd(int nfd)
 {
 	int ret;
 
 	while (true) {
-		ret = read_netlink_once(nfd);
+		ret = read_netlinkfd_once(nfd);
 		if (ret <= 0)
 			break;
 	}
@@ -348,28 +353,62 @@ setup_signalfd()
 	return fd;
 }
 
+/*
+ * Return values:
+ * < 0 = error
+ *   0 = done
+ * > 0 = read again
+ */
+static int
+read_signalfd_once(int sfd)
+{
+	struct signalfd_siginfo sig;
+	ssize_t r;
+
+	r = read(sfd, &sig, sizeof(sig));
+	if (r == 0) {
+		return 0;
+	} else if (r < 0) {
+		if (errno == EAGAIN || errno == EWOULDBLOCK)
+			return 0;
+		else if (errno == EINTR)
+			return 1;
+		perror("read signalfd");
+		return -1;
+	} else if ((size_t)r != sizeof(sig)) {
+		printf("signalfd weird read size: %zi\n", r);
+		return -1;
+	}
+
+	printf("Received signal (%u): %s\n", (unsigned)sig.ssi_signo, strsignal(sig.ssi_signo));
+	switch (sig.ssi_signo) {
+	case SIGINT:
+		_fallthrough_;
+	case SIGTERM:
+		state = STOPPING;
+		break;
+	case SIGHUP:
+		state = RELOADING;
+		break;
+	default:
+		break;
+	}
+
+	return 1;
+}
+
 static int
 read_signalfd(int sfd)
 {
-	struct signalfd_siginfo sig;
+	int ret;
 
-	int ret = read(sfd, &sig, sizeof(sig));
-	if (ret < 0)
-		perror("read");
-
-	// man signal(7)
-	printf("Got signal: %u %s\n", (unsigned)sig.ssi_signo, strsignal(sig.ssi_signo));
-	if (sig.ssi_signo == SIGTERM) {
-		printf("Signal was SIGTERM\n");
-		quit = 1;
+	while (true) {
+		ret = read_signalfd_once(sfd);
+		if (ret <= 0)
+			break;
 	}
 
-	if (sig.ssi_signo == SIGINT) {
-		printf("Signal was SIGINT\n");
-		quit = 1;
-	}
-
-	return 0;
+	return ret;
 }
 
 static pid_t
@@ -444,7 +483,7 @@ event_loop()
 
 	printf("sfd %i nfd %i tfd %i\n", sfd, nfd, tfd);
 
-	while (!quit) {
+	while (state == RUNNING) {
 		struct epoll_event ev;
 		int ret = epoll_wait(efd, &ev, 1, -1);
 		if (ret <= 0) {
@@ -457,7 +496,7 @@ event_loop()
 		printf("FD is %i\n", ev.data.fd);
 
 		if (ev.data.fd == nfd) {
-			read_netlink(nfd);
+			read_netlinkfd(nfd);
 			arm_timerfd(tfd);
 
 		} else if (ev.data.fd == tfd) {
@@ -471,7 +510,6 @@ event_loop()
 			}
 
 		} else if (ev.data.fd == sfd) {
-			printf("Signal data is available now\n");
 			read_signalfd(sfd);
 		}
 	}
@@ -486,7 +524,9 @@ main(_unused_ int argc, _unused_ char **argv)
 	unsigned count = 0;
 
 	while (true) {
-		quit = 0;
+		if (state == STOPPING)
+			break;
+		state = RUNNING;
 		event_loop();
 		printf("LOOP EXIT\n");
 		count++;
