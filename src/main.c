@@ -796,7 +796,7 @@ event_loop()
 			if (timerfd_read(tfd) < 0)
 				break;
 
-			cfd = childfd_init("./test.sh");
+			cfd = childfd_init("/root/test.sh");
 			if (cfd < 0)
 				break;
 
