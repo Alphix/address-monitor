@@ -10,10 +10,16 @@ enum states {
 	STOPPING,
 };
 
+struct netdev_addr {
+	char *addr;
+	struct list_head list;
+};
+
 struct netdev {
 	int index;
 	char *name;
 	bool monitored;
+	struct list_head addrs;
 	struct list_head list;
 };
 

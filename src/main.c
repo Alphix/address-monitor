@@ -108,20 +108,37 @@ static int
 netdev_del_addr(int index, const char *addr)
 {
 	struct netdev *dev;
+	struct netdev_addr *netdev_addr, *found = NULL;
 
 	list_for_each_entry(dev, &config.netdevs, list) {
 		if (dev->index != index)
 			continue;
+
+		if (!dev->monitored)
+			continue;
+
+		list_for_each_entry(netdev_addr, &dev->addrs, list) {
+			if (streq(netdev_addr->addr, addr)) {
+				found = netdev_addr;
+				break;
+			}
+		}
+
+		if (!found) {
+			verbose("Unknown address deleted from interface %s (%i): %s",
+				dev->name, dev->index, addr);
+			return -1;
+		}
+
+		list_del(&found->list);
 		verbose("Address deleted from interface %s (%i): %s",
 			dev->name, dev->index, addr);
-		if (dev->monitored)
-			config.pending_changes = true;
+
+		config.pending_changes = true;
 		return 0;
 	}
 
 	verbose("Address deleted from unknown interface %i: %s", index, addr);
-	/* FIXME: review use of pending_changes */
-	config.pending_changes = true;
 	return -1;
 }
 
@@ -129,33 +146,61 @@ static int
 netdev_add_addr(int index, const char *addr)
 {
 	struct netdev *dev;
+	struct netdev_addr *netdev_addr;
 
 	list_for_each_entry(dev, &config.netdevs, list) {
 		if (dev->index != index)
 			continue;
-		verbose("Address added to interface %s (%i): %s",
+
+		if (!dev->monitored)
+			return 0;
+
+		list_for_each_entry(netdev_addr, &dev->addrs, list) {
+			if (streq(addr, netdev_addr->addr)) {
+				debug("Known address refreshed for interface %s (%i): %s",
+				      dev->name, dev->index, addr);
+				return 0;
+			}
+		}
+	
+		netdev_addr = malloc(sizeof(*netdev_addr));
+		netdev_addr->addr = strdup(addr);
+		if (!netdev_addr->addr) {
+			error("strdup addr (%m");
+			return -1;
+		}
+
+		list_add(&netdev_addr->list, &dev->addrs);
+		verbose("New address added to interface %s (%i): %s",
 			dev->name, dev->index, addr);
-		if (dev->monitored)
-			config.pending_changes = true;
+		config.pending_changes = true;
 		return 0;
 	}
 
 	verbose("Address added to unknown interface %i: %s", index, addr);
-	config.pending_changes = true;
 	return -1;
 }
 
 static unsigned
 netdev_del(int index)
 {
-	struct netdev *dev, *tmp;
+	struct netdev *dev, *tdev;
+	struct netdev_addr *netdev_addr, *taddr;
 	unsigned r = 0;
 
-	list_for_each_entry_safe(dev, tmp, &config.netdevs, list) {
+	list_for_each_entry_safe(dev, tdev, &config.netdevs, list) {
 		if (dev->index != index)
 			continue;
+
+		list_for_each_entry_safe(netdev_addr, taddr, &dev->addrs, list) {
+			list_del(&netdev_addr->list);
+			free(netdev_addr->addr);
+			free(netdev_addr);
+		}
+
 		verbose("Deleted interface %s, index %i (%smonitored)",
 			dev->name, dev->index, dev->monitored ? "" : "not ");
+
 		list_del(&dev->list);
 		if (dev->monitored)
 			config.monitored_netdevs_count--;
@@ -220,6 +265,7 @@ netdev_add(int index, const char *name)
 		return -1;
 	}
 
+	INIT_LIST_HEAD(&dev->addrs);
 	dev->name = strdup(name);
 	if (!dev->name) {
 		error("strdup (%m)");
