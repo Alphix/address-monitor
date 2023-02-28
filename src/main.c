@@ -816,6 +816,7 @@ childfd_init(const char *path)
 		return -1;
 	} else if (pid == 0) {
 		/* Child */
+		sd_notify(1, "");
 		execl(path, path, NULL);
 		error("execl %s: %m", path);
 		fflush(stdout);
