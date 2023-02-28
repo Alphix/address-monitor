@@ -34,9 +34,8 @@ struct config config = {
 	.monitored_netdevs_count = 0,
 	.to_monitor_netdevs = NULL,
 	.to_monitor_netdevs_count = 0,
+	.netdevs = LIST_HEAD_INIT(config.netdevs),
 };
-
-static LIST_HEAD(netdevs);
 
 static void
 update_ready_state()
@@ -109,7 +108,7 @@ netdev_del_addr(int index, const char *addr)
 {
 	struct netdev *dev;
 
-	list_for_each_entry(dev, &netdevs, list) {
+	list_for_each_entry(dev, &config.netdevs, list) {
 		if (dev->index != index)
 			continue;
 		verbose("Address deleted from interface %s (%i): %s",
@@ -130,7 +129,7 @@ netdev_add_addr(int index, const char *addr)
 {
 	struct netdev *dev;
 
-	list_for_each_entry(dev, &netdevs, list) {
+	list_for_each_entry(dev, &config.netdevs, list) {
 		if (dev->index != index)
 			continue;
 		verbose("Address added to interface %s (%i): %s",
@@ -151,7 +150,7 @@ netdev_del(int index)
 	struct netdev *dev, *tmp;
 	unsigned r = 0;
 
-	list_for_each_entry_safe(dev, tmp, &netdevs, list) {
+	list_for_each_entry_safe(dev, tmp, &config.netdevs, list) {
 		if (dev->index != index)
 			continue;
 		verbose("Deleted interface %s, index %i (%smonitored)",
@@ -176,7 +175,7 @@ netdev_del_all()
 	struct netdev *dev, *tmp;
 	unsigned r = 0;
 
-	list_for_each_entry_safe(dev, tmp, &netdevs, list) {
+	list_for_each_entry_safe(dev, tmp, &config.netdevs, list) {
 		list_del(&dev->list);
 		if (dev->monitored)
 			config.monitored_netdevs_count--;
@@ -205,7 +204,7 @@ netdev_add(int index, const char *name)
 		}
 	}
 
-	list_for_each_entry(dev, &netdevs, list) {
+	list_for_each_entry(dev, &config.netdevs, list) {
 		if (dev->index != index)
 			continue;
 		if (empty_str(dev->name) && !empty_str(name))
@@ -229,7 +228,7 @@ netdev_add(int index, const char *name)
 
 	dev->index = index;
 	dev->monitored = monitored;
-	list_add(&dev->list, &netdevs);
+	list_add(&dev->list, &config.netdevs);
 	if (dev->monitored) {
 		config.monitored_netdevs_count++;
 		update_ready_state();
@@ -526,7 +525,7 @@ signalfd_read_once(int sfd)
 	case SIGUSR1:
 		struct netdev *dev;
 		info("Dumping list of known netdevs:");
-		list_for_each_entry(dev, &netdevs, list)
+		list_for_each_entry(dev, &config.netdevs, list)
 			info("\tnetdev: index %i, name %s", dev->index, dev->name);
 		_fallthrough_;
 	default:

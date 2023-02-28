@@ -26,6 +26,7 @@ struct config {
 	unsigned monitored_netdevs_count;
 	char **to_monitor_netdevs;
 	char to_monitor_netdevs_count;
+	struct list_head netdevs;
 };
 
 extern struct config config;
