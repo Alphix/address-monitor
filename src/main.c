@@ -31,6 +31,7 @@ struct config config = {
 	.daemonize = false,
 	.log_file = NULL,
 	.log_file_path = NULL,
+	.command = "/usr/local/sbin/address-monitor-helper",
 	.monitored_netdevs_count = 0,
 	.to_monitor_netdevs = NULL,
 	.to_monitor_netdevs_count = 0,
@@ -635,7 +636,7 @@ childfd_wait_once(int *cfd)
 	switch (info.si_code) {
 	case CLD_EXITED:
 		if (info.si_status == 0)
-			verbose("Child command finished with success");
+			verbose("Child command finished successfully");
 		else
 			info("Child command exited with error: %i", info.si_status);
 		break;
@@ -817,7 +818,7 @@ event_loop()
 			if (timerfd_read(tfd) < 0)
 				break;
 
-			cfd = childfd_init("/root/test.sh");
+			cfd = childfd_init(config.command);
 			if (cfd < 0)
 				break;
 
@@ -845,7 +846,7 @@ usage(bool invalid)
 	info("Usage: %s [OPTION...] [IFNAME...]\n"
 	       "\n"
 	       "Valid options:\n"
-	       "  -c, --cfg=FILE\tread configuration from FILE\n"
+	       "  -c, --command=PATH\texecute the command at PATH on address change\n"
 	       "  -l, --logfile=FILE\tlog to FILE instead of stderr\n"
 	       "  -h, --help\t\tprint this information\n"
 	       "  -v, --verbose\t\tenable verbose logging\n"
@@ -866,7 +867,7 @@ config_init(int argc, char **argv)
 	while (true) {
 		int option_index = 0;
 		static struct option long_options[] = {
-			{ "cfg",	required_argument,	0, 'c' },
+			{ "command",	required_argument,	0, 'c' },
 			{ "logfile",	required_argument,	0, 'l' },
 			{ "help",	no_argument,		0, 'h' },
 			{ "verbose",	no_argument,		0, 'v' },
@@ -880,10 +881,9 @@ config_init(int argc, char **argv)
 
 		switch (c) {
 		case 'c':
-			printf("Config file: %s\n", optarg);
+			config.command = optarg;
 			break;
 		case 'l':
-			debug("Logfile: %s", optarg);
 			config.log_file_path = optarg;
 			break;
 		case 'v':
