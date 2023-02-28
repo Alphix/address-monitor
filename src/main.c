@@ -282,8 +282,9 @@ netlink_read_once(int nfd)
 		case RTM_DELLINK:
 			struct ifinfomsg *ifi = NLMSG_DATA(nlh);
 			char if_name[128];
-			rth = IFLA_RTA(ifi);
+
 			if_index = ifi->ifi_index;
+			rth = IFLA_RTA(ifi);
 
 			for (int rtl = IFLA_PAYLOAD(nlh); RTA_OK(rth, rtl); rth = RTA_NEXT(rth, rtl)) {
 				if (rth->rta_type == IFLA_IFNAME)
@@ -301,16 +302,36 @@ netlink_read_once(int nfd)
 		case RTM_DELADDR:
 			struct ifaddrmsg *ifa = NLMSG_DATA(nlh);
 			char if_addr[1024];
-			rth = IFA_RTA(ifa);
+
+			if (ifa->ifa_flags & IFA_F_TENTATIVE)
+				continue;
+
 			if_index = ifa->ifa_index;
+			rth = IFA_RTA(ifa);
 
 			for (int rtl = IFA_PAYLOAD(nlh); RTA_OK(rth, rtl); rth = RTA_NEXT(rth, rtl)) {
-				if (rth->rta_type != IFA_LOCAL) {
+				switch (ifa->ifa_family) {
+				case AF_INET:
+					if (rth->rta_type != IFA_LOCAL)
+						continue;
+					if (!inet_ntop(ifa->ifa_family, RTA_DATA(rth), if_addr, sizeof(if_addr)))
+						return -1;
+					break;
+				case AF_INET6:
+					if (rth->rta_type != IFA_ADDRESS)
+						continue;
+					if (!inet_ntop(ifa->ifa_family, RTA_DATA(rth), if_addr, sizeof(if_addr)))
+						return -1;
+
+					size_t offset = strlen(if_addr);
+					size_t remain = sizeof(if_addr) - offset;
+					int len = snprintf(if_addr + offset, remain, "/%" PRIu8, ifa->ifa_prefixlen);
+					if (len < 1 || (unsigned)len >= remain)
+						return -1;
+					break;
+				default:
 					continue;
 				}
-
-				if (!inet_ntop(ifa->ifa_family, RTA_DATA(rth), if_addr, sizeof(if_addr)))
-					continue;
 
 				if (nlh->nlmsg_type == RTM_NEWADDR)
 					netdev_add_addr(if_index, if_addr);
