@@ -19,28 +19,92 @@
 #include <sys/signalfd.h>
 #include <sys/epoll.h>
 #include <sys/wait.h>
+#include <systemd/sd-daemon.h>
 
 #include "config.h"
 #include "utils.h"
+#include "main.h"
 
-static enum states {
-	RUNNING,
-	RELOADING,
-	STOPPING,
-} state = RUNNING;
-
-static bool pending_changes = false;
-
-static char **monitored_netdevs = NULL;
+struct config config = {
+	.state = RELOADING,
+	.pending_changes = false,
+	.daemonize = false,
+	.log_file = NULL,
+	.log_file_path = NULL,
+	.use_colors = false,
+	.sd_daemon = false,
+	.monitored_netdevs_count = 0,
+	.to_monitor_netdevs = NULL,
+	.to_monitor_netdevs_count = 0,
+};
 
 static LIST_HEAD(netdevs);
 
-struct netdev {
-	int index;
-	char *name;
-	bool monitored;
-	struct list_head list;
-};
+static void
+update_ready_state()
+{
+	if (config.state != READY)
+		return;
+
+	if (config.to_monitor_netdevs_count > 0) {
+		sd_notifyf(0,
+			   "READY=1\n"
+			   "STATUS=Running, %u/%u netdevs being monitored\n",
+			   config.monitored_netdevs_count,
+			   config.to_monitor_netdevs_count);
+		debug("State: Running, %u/%u netdevs being monitored",
+		      config.monitored_netdevs_count,
+		      config.to_monitor_netdevs_count);
+	} else {
+		sd_notifyf(0,
+			   "READY=1\n"
+			   "STATUS=Running, %u netdevs being monitored\n",
+			   config.monitored_netdevs_count);
+		debug("State: Running, %u netdevs being monitored",
+		      config.monitored_netdevs_count);
+	}
+}
+
+static void
+set_state(enum states state, const char *reason)
+{
+	if (config.state == state)
+		return;
+
+	config.state = state;
+
+	switch (state) {
+	case READY:
+		update_ready_state();
+		break;
+	case RELOADING:
+		if (reason) {
+			sd_notifyf(0,
+				   "RELOADING=1\n"
+				   "STATUS=Reloading (%s)\n", reason);
+			debug("State: Reloading (%s)", reason);
+		} else {
+			sd_notifyf(0,
+				   "RELOADING=1\n"
+				   "STATUS=Reloading\n");
+			debug("State: Reloading");
+		}
+		break;
+	case STOPPING:
+		if (reason) {
+			sd_notifyf(0,
+				   "STOPPING=1\n"
+				   "STATUS=Stopping (%s)\n", reason);
+			debug("State: Stopping (%s)", reason);
+		} else {
+			sd_notifyf(0,
+				   "STOPPING=1\n"
+				   "STATUS=Stopping\n");
+			debug("State: Stopping");
+		}
+		break;
+	}
+}
 
 static int
 netdev_del_addr(int index, const char *addr)
@@ -50,16 +114,16 @@ netdev_del_addr(int index, const char *addr)
 	list_for_each_entry(dev, &netdevs, list) {
 		if (dev->index != index)
 			continue;
-		printf("Address deleted from interface %s (%i): %s\n",
-		       dev->name, dev->index, addr);
+		debug("Address deleted from interface %s (%i): %s",
+		      dev->name, dev->index, addr);
 		if (dev->monitored)
-			pending_changes = true;
+			config.pending_changes = true;
 		return 0;
 	}
 
-	printf("Address deleted from unknown interface %i: %s\n", index, addr);
+	debug("Address deleted from unknown interface %i: %s", index, addr);
 	/* FIXME: review use of pending_changes */
-	pending_changes = true;
+	config.pending_changes = true;
 	return -1;
 }
 
@@ -71,15 +135,15 @@ netdev_add_addr(int index, const char *addr)
 	list_for_each_entry(dev, &netdevs, list) {
 		if (dev->index != index)
 			continue;
-		printf("Address added to interface %s (%i): %s\n",
-		       dev->name, dev->index, addr);
+		debug("Address added to interface %s (%i): %s",
+		      dev->name, dev->index, addr);
 		if (dev->monitored)
-			pending_changes = true;
+			config.pending_changes = true;
 		return 0;
 	}
 
-	printf("Address added to unknown interface %i: %s\n", index, addr);
-	pending_changes = true;
+	debug("Address added to unknown interface %i: %s", index, addr);
+	config.pending_changes = true;
 	return -1;
 }
 
@@ -92,15 +156,19 @@ netdev_del(int index)
 	list_for_each_entry_safe(dev, tmp, &netdevs, list) {
 		if (dev->index != index)
 			continue;
-		printf("Deleted interface %s, index %i (%smonitored)\n",
-		       dev->name, dev->index, dev->monitored ? "" : "not ");
+		debug("Deleted interface %s, index %i (%smonitored)",
+		      dev->name, dev->index, dev->monitored ? "" : "not ");
 		list_del(&dev->list);
+		if (dev->monitored)
+			config.monitored_netdevs_count--;
 		free(dev->name);
 		free(dev);
 		r++;
 	}
 
-	pending_changes = true;
+	if (r > 0)
+		update_ready_state();
+	config.pending_changes = true;
 	return r;
 }
 
@@ -112,12 +180,14 @@ netdev_del_all()
 
 	list_for_each_entry_safe(dev, tmp, &netdevs, list) {
 		list_del(&dev->list);
+		if (dev->monitored)
+			config.monitored_netdevs_count--;
 		free(dev->name);
 		free(dev);
 		r++;
 	}
 
-	pending_changes = true;
+	config.pending_changes = true;
 	return r;
 }
 
@@ -125,11 +195,11 @@ static int
 netdev_add(int index, const char *name)
 {
 	struct netdev *dev;
-	bool monitored = monitored_netdevs ? false : true;
+	bool monitored = config.to_monitor_netdevs ? false : true;
 
-	if (monitored_netdevs && name) {
+	if (config.to_monitor_netdevs && name) {
 		char **tmp;
-		for (tmp = monitored_netdevs; *tmp; tmp++) {
+		for (tmp = config.to_monitor_netdevs; *tmp; tmp++) {
 			if (streq(*tmp, name)) {
 				monitored = true;
 				break;
@@ -162,8 +232,13 @@ netdev_add(int index, const char *name)
 	dev->index = index;
 	dev->monitored = monitored;
 	list_add(&dev->list, &netdevs);
-	printf("Added interface %s, index %i (%smonitored)\n",
-	       dev->name, dev->index, dev->monitored ? "" : "not ");
+	if (dev->monitored) {
+		config.monitored_netdevs_count++;
+		update_ready_state();
+	}
+
+	debug("Added interface %s, index %i (%smonitored)",
+	      dev->name, dev->index, dev->monitored ? "" : "not ");
 	return 0;
 }
 
@@ -176,7 +251,7 @@ netdev_add(int index, const char *name)
 static int
 netlink_read_once(int nfd)
 {
-	char buffer[16 * 1024];
+	char buffer[32 * 1024];
 	ssize_t r;
 
 	r = recv(nfd, buffer, sizeof(buffer), 0);
@@ -187,14 +262,14 @@ netlink_read_once(int nfd)
 			return 0;
 		else if (errno == EINTR)
 			return 1;
-		perror("recv");
+		error("recv");
 		return -1;
 	} else if ((size_t)r >= sizeof(buffer)) {
 		printf("Netlink buffer overflow (%zi)\n", r);
 		return -1;
 	}
 
-	printf("Read %zi bytes from netlink\n", r);
+	debug("Read %zi bytes from netlink", r);
 	struct nlmsghdr *nlh = (struct nlmsghdr *)buffer;
 
 	if (nlh->nlmsg_flags & MSG_TRUNC)
@@ -204,9 +279,7 @@ netlink_read_once(int nfd)
 		struct rtattr *rth;
 		int if_index;
 
-		printf("Netlink msg type: %i\n", nlh->nlmsg_type);
 		switch (nlh->nlmsg_type) {
-
 		case RTM_NEWLINK:
 			_fallthrough_;
 		case RTM_DELLINK:
@@ -220,12 +293,10 @@ netlink_read_once(int nfd)
 					strcpy(if_name, RTA_DATA(rth));
 			}
 
-			if (nlh->nlmsg_type == RTM_NEWLINK) {
+			if (nlh->nlmsg_type == RTM_NEWLINK)
 				netdev_add(if_index, if_name);
-			} else {
-				printf("Deleted interface %s, index %i\n", if_name, if_index);
+			else
 				netdev_del(if_index);
-			}
 			break;
 
 		case RTM_NEWADDR:
@@ -238,7 +309,6 @@ netlink_read_once(int nfd)
 
 			for (int rtl = IFA_PAYLOAD(nlh); RTA_OK(rth, rtl); rth = RTA_NEXT(rth, rtl)) {
 				if (rth->rta_type != IFA_LOCAL) {
-					printf("Got RTM_NEW/DELADDR with type: %i\n", (int)rth->rta_type);
 					continue;
 				}
 
@@ -294,9 +364,8 @@ netlink_get_names(int sock)
 	ssize_t r;
 
 	r = send(sock, &msg, msglen, 0);
-	if (r < 0 || (size_t)r != msglen) {
-		fprintf(stderr, "Error sending netlink msg\n");
-	}
+	if (r < 0 || (size_t)r != msglen)
+		error("netlink send (%m)");
 
 	return r;
 }
@@ -312,21 +381,25 @@ netlink_init()
 
 	fd = socket(PF_NETLINK, SOCK_RAW | SOCK_NONBLOCK | SOCK_CLOEXEC, NETLINK_ROUTE);
 	if (fd < 0) {
-		perror("netlink socket");
-		return -1;
+		error("netlink socket (%m)");
+		goto out;
 	}
 
 	if (bind(fd, (struct sockaddr *)&snl, sizeof(snl)) < 0) {
-		perror("bind");
+		error("bind (%m)");
 		close(fd);
-		return -1;
+		fd = -1;
+		goto out;
 	}
 
 	if (netlink_get_names(fd) < 0) {
 		close(fd);
-		return -1;
+		fd = -1;
 	}
 
+out:
+	if (fd < 0)
+		set_state(RELOADING, "netlink_init");
 	return fd;
 }
 
@@ -385,8 +458,15 @@ timerfd_arm(int tfd)
 		.it_interval.tv_nsec = 0,
 	};
 	struct itimerspec old_value;
+	int r;
 
-	return timerfd_settime(tfd, 0, &new_value, &old_value);
+	r = timerfd_settime(tfd, 0, &new_value, &old_value);
+	if (r < 0) {
+		error("timerfd_settime (%m)");
+		set_state(RELOADING, "timerfd_settime");
+	}
+
+	return r;
 }
 
 static int
@@ -396,8 +476,8 @@ timerfd_init()
 
 	fd = timerfd_create(CLOCK_BOOTTIME, TFD_NONBLOCK | TFD_CLOEXEC);
 	if (fd < 0) {
-		perror("timerfd_create");
-		return -1;
+		error("timerfd_create (%m)");
+		set_state(RELOADING, "timerfd_create");
 	}
 
 	return fd;
@@ -435,10 +515,10 @@ signalfd_read_once(int sfd)
 	case SIGINT:
 		_fallthrough_;
 	case SIGTERM:
-		state = STOPPING;
+		set_state(STOPPING, "SIGTERM");
 		break;
 	case SIGHUP:
-		state = RELOADING;
+		set_state(RELOADING, "SIGHUP");
 		break;
 	case SIGUSR1:
 		struct netdev *dev;
@@ -475,18 +555,25 @@ signalfd_init()
 	int r;
 
 	r = sigfillset(&sigset);
-	if (r < 0)
-		perror("sigfillset");
+	if (r < 0) {
+		error("sigfillset (%m)");
+		goto out;
+	}
 
 	r = sigprocmask(SIG_BLOCK, &sigset, NULL);
+	if (r < 0) {
+		error("sigprocmask (%m)");
+		goto out;
+	}
+
+	r = signalfd(-1, &sigset, SFD_NONBLOCK | SFD_CLOEXEC);
 	if (r < 0)
-		perror("sigprocmask");
+		error("signalfd (%m)");
 
-	int fd = signalfd(-1, &sigset, SFD_NONBLOCK | SFD_CLOEXEC);
-	if (fd < 0)
-		perror("signalfd");
-
-	return fd;
+out:
+	if (r < 0)
+		set_state(RELOADING, "signalfd_init");
+	return r;
 }
 
 /*
@@ -616,7 +703,7 @@ childfd_init(const char *path)
 	} else {
 		/* Parent */
 		printf("Created child PID %d with pidfd %d\n", pid, pidfd);
-		pending_changes = false;
+		config.pending_changes = false;
 		return pidfd;
 	}
 }
@@ -630,15 +717,22 @@ epoll_add(int efd, int fd)
 	};
 	int r;
 
+	if (fd < 0)
+		return -1;
+
 	r = epoll_ctl(efd, EPOLL_CTL_ADD, fd, &ev);
-	if (r < 0)
-		perror("epoll_ctl");
+	if (r < 0) {
+		error("epoll_ctl (%m)");
+		set_state(RELOADING, "epoll_ctl");
+	}
 	return r;
 }
 
 static int
 event_loop()
 {
+	set_state(READY, NULL);
+
 	_cleanup_close_ int efd = -1;
 	_cleanup_close_ int sfd = signalfd_init();
 	_cleanup_close_ int nfd = netlink_init();
@@ -646,42 +740,45 @@ event_loop()
 	int cfd = -1;
 
 	efd = epoll_create1(EPOLL_CLOEXEC);
-	if (efd < 0) {
-		perror("epoll_create");
-		exit(EXIT_FAILURE);
-	}
-
+	if (efd < 0)
+		die("epoll_create (%m)");
+	
 	epoll_add(efd, sfd);
 	epoll_add(efd, nfd);
 	epoll_add(efd, tfd);
 
-	printf("sfd %i nfd %i tfd %i\n", sfd, nfd, tfd);
+	debug("Epoll ready: efd %i sfd %i nfd %i tfd %i", efd, sfd, nfd, tfd);
 
-	while (state == RUNNING) {
+	while (config.state == READY) {
 		struct epoll_event ev;
 		int r;
 
-		if (pending_changes)
-			timerfd_arm(tfd);
+		if (config.pending_changes)
+			if (timerfd_arm(tfd) < 0)
+				break;
 
 		r = epoll_wait(efd, &ev, 1, -1);
 		if (r < 0) {
 			if (errno == EINTR)
 				continue;
-			perror("epoll_wait");
+			error("epoll_wait (%m)");
+			set_state(RELOADING, "epoll_wait");
 			break;
 		} else if (r == 0) {
-			printf("Unexpected epoll_wait return value (0)\n");
+			error("Unexpected epoll_wait return value (0)");
+			set_state(RELOADING, "epoll_wait");
 			break;
 		} else if (ev.data.fd < 0) {
-			printf("Unexpected epoll_wait return fd: %i\n", ev.data.fd);
+			error("Unexpected epoll_wait return fd: %i", ev.data.fd);
+			set_state(RELOADING, "epoll_wait");
 			break;
 		} else if (ev.events != EPOLLIN) {
-			printf("Unexpected epoll_wait return event: 0x%08" PRIx32 "\n", ev.events);
+			error("Unexpected epoll_wait return event: 0x%08" PRIx32, ev.events);
+			set_state(RELOADING, "epoll_wait");
 			break;
 		}
 
-		printf("Received event on fd %i\n", ev.data.fd);
+		debug("Received event on fd %i", ev.data.fd);
 
 		if (ev.data.fd == nfd) {
 			netlink_read(nfd);
@@ -689,7 +786,7 @@ event_loop()
 		} else if (ev.data.fd == tfd) {
 			timerfd_read(tfd);
 			cfd = childfd_init("./test.sh");
-			printf("Child pidfd = %i\n", cfd);
+			debug("Child pidfd = %i", cfd);
 			epoll_add(efd, cfd);
 
 		} else if (ev.data.fd == sfd) {
@@ -709,9 +806,9 @@ _noreturn_ static void
 usage(bool invalid)
 {
 	if (invalid)
-		printf("Invalid option(s)\n");
+		info("Invalid option(s)");
 
-	printf("Usage: %s [OPTION...] [IFNAME...]\n"
+	info("Usage: %s [OPTION...] [IFNAME...]\n"
 	       "\n"
 	       "Valid options:\n"
 	       "  -c, --cfg=FILE\tread configuration from FILE\n"
@@ -749,53 +846,48 @@ config_init(int argc, char **argv)
 
 		switch (c) {
 		case 'c':
-			printf("Config dir: %s\n", optarg);
+			printf("Config file: %s\n", optarg);
 			break;
 		case 'l':
 			printf("Logfile: %s\n", optarg);
 			break;
 		case 'v':
-			printf("Verbose output\n");
+			debug_mask |= DBG_VERBOSE;
 			break;
 		case 'd':
-			printf("Debug output\n");
+			debug_mask |= DBG_DEBUG | DBG_VERBOSE;
 			break;
 		case 'h':
-			printf("Help output\n");
 			usage(false);
 			break;
 		default:
-			printf("Unknown option\n");
 			usage(true);
 			break;
 		}
 	}
 
-	if (optind < argc)
-		monitored_netdevs = &argv[optind];
+	if (optind < argc) {
+		config.to_monitor_netdevs = &argv[optind];
+		config.to_monitor_netdevs_count = argc - optind;
+	}
 }
 
 int
 main(int argc, char **argv)
 {
-	unsigned count = 0;
+	assert_die(argc > 0 && argv, "invalid arguments");
 
-	// FIXME: assert_die(argc > 0 && argv, "invalid arguments");
+	sd_notifyf(0, "MAINPID=%lu", (unsigned long)getpid());
 
 	config_init(argc, argv);
 
-	while (true) {
-		if (state == STOPPING)
-			break;
-		state = RUNNING;
-		pending_changes = true;
+	while (config.state != STOPPING) {
+		config.pending_changes = true;
 		event_loop();
-		printf("LOOP EXIT\n");
-		count++;
-		if (count > 3)
-			break;
 	}
 
+	fflush(stdout);
+	fflush(stderr);
 	exit(EXIT_SUCCESS);
 }
 
