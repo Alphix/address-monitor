@@ -883,7 +883,8 @@ config_init(int argc, char **argv)
 			printf("Config file: %s\n", optarg);
 			break;
 		case 'l':
-			printf("Logfile: %s\n", optarg);
+			debug("Logfile: %s", optarg);
+			config.log_file_path = optarg;
 			break;
 		case 'v':
 			debug_mask |= DBG_VERBOSE;
@@ -904,6 +905,13 @@ config_init(int argc, char **argv)
 		config.to_monitor_netdevs = &argv[optind];
 		config.to_monitor_netdevs_count = argc - optind;
 	}
+
+	if (config.log_file_path) {
+		FILE *log_file = fopen(config.log_file_path, "ae");
+		if (!log_file)
+			die("fopen(%s) failed: %m", config.log_file_path);
+		config.log_file = log_file;
+	}
 }
 
 int
@@ -920,6 +928,11 @@ main(int argc, char **argv)
 		event_loop();
 	}
 
+	if (config.log_file) {
+		fflush(config.log_file);
+		fclose(config.log_file);
+		config.log_file = NULL;
+	}
 	fflush(stdout);
 	fflush(stderr);
 	exit(EXIT_SUCCESS);

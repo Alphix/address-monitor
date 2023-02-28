@@ -134,6 +134,8 @@ msg(enum debug_lvl lvl, const char *fmt, va_list ap)
 		fprintf(stderr, "%s", color);
 
 	vfprintf(config.log_file ? config.log_file : stderr, fmt, ap);
+	if (config.log_file)
+		fflush(config.log_file);
 
 	if (color)
 		fprintf(stderr, "%s", ansi_normal);
