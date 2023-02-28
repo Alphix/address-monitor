@@ -15,6 +15,7 @@ executable(
 	'address-monitor',
 	srcs_address_monitor,
 	install: true,
+	install_dir: 'sbin',
 	dependencies: deps_address_monitor,
 )
 

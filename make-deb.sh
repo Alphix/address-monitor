@@ -11,7 +11,8 @@ mkdir "${deb_dir}"
 
 version="1"
 target="address-monitor-${version}"
-otarget="$(echo "${target}" | tr '-' '_')"
+#otarget="$(echo "${target}" | tr '-' '_')"
+otarget="address-monitor_${version}"
 build_dir="${deb_dir}/${target}"
 
 cp -arf "${base}" "${build_dir}"
