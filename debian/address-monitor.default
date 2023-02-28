@@ -6,6 +6,9 @@
 # names to monitor,
 #INTERFACES="enp4s0 enp9s0"
 
+# Extra options to pass to the daemon.
+EXTRA_OPTIONS=""
+
 # External command to execute when an address change has been discovered.
 # This must be set, otherwise the daemon won't start.
 COMMAND="/usr/local/sbin/address-monitor-helper"

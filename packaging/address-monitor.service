@@ -1,0 +1,11 @@
+[Unit]
+Description=example systemd service unit file.
+
+[Service]
+Type=notify
+NotifyAccess=main
+EnvironmentFile=/etc/default/address-monitor
+ExecStart=/usr/local/sbin/address-monitor $EXTRA_OPTIONS -c $COMMAND $INTERFACES
+
+[Install]
+WantedBy=multi-user.target
