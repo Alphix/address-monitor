@@ -727,7 +727,7 @@ childfd_init(const char *path)
 	} else if (pid == 0) {
 		/* Child */
 		execl(path, path, NULL);
-		error("execl (%m)");
+		error("execl %s: %m", path);
 		fflush(stdout);
 		fflush(stderr);
 		exit(EXIT_FAILURE);
