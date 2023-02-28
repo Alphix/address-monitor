@@ -52,16 +52,16 @@ update_ready_state()
 			   "STATUS=Running, %u/%u netdevs being monitored\n",
 			   config.monitored_netdevs_count,
 			   config.to_monitor_netdevs_count);
-		debug("State: Running, %u/%u netdevs being monitored",
-		      config.monitored_netdevs_count,
-		      config.to_monitor_netdevs_count);
+		verbose("State: Running, %u/%u netdevs being monitored",
+			config.monitored_netdevs_count,
+			config.to_monitor_netdevs_count);
 	} else {
 		sd_notifyf(0,
 			   "READY=1\n"
 			   "STATUS=Running, %u netdevs being monitored\n",
 			   config.monitored_netdevs_count);
-		debug("State: Running, %u netdevs being monitored",
-		      config.monitored_netdevs_count);
+		verbose("State: Running, %u netdevs being monitored",
+			config.monitored_netdevs_count);
 	}
 }
 
@@ -82,12 +82,12 @@ set_state(enum states state, const char *reason)
 			sd_notifyf(0,
 				   "RELOADING=1\n"
 				   "STATUS=Reloading (%s)\n", reason);
-			debug("State: Reloading (%s)", reason);
+			verbose("State: Reloading (%s)", reason);
 		} else {
 			sd_notifyf(0,
 				   "RELOADING=1\n"
 				   "STATUS=Reloading\n");
-			debug("State: Reloading");
+			verbose("State: Reloading");
 		}
 		break;
 	case STOPPING:
@@ -95,12 +95,12 @@ set_state(enum states state, const char *reason)
 			sd_notifyf(0,
 				   "STOPPING=1\n"
 				   "STATUS=Stopping (%s)\n", reason);
-			debug("State: Stopping (%s)", reason);
+			verbose("State: Stopping (%s)", reason);
 		} else {
 			sd_notifyf(0,
 				   "STOPPING=1\n"
 				   "STATUS=Stopping\n");
-			debug("State: Stopping");
+			verbose("State: Stopping");
 		}
 		break;
 	}
@@ -114,14 +114,14 @@ netdev_del_addr(int index, const char *addr)
 	list_for_each_entry(dev, &netdevs, list) {
 		if (dev->index != index)
 			continue;
-		debug("Address deleted from interface %s (%i): %s",
-		      dev->name, dev->index, addr);
+		verbose("Address deleted from interface %s (%i): %s",
+			dev->name, dev->index, addr);
 		if (dev->monitored)
 			config.pending_changes = true;
 		return 0;
 	}
 
-	debug("Address deleted from unknown interface %i: %s", index, addr);
+	verbose("Address deleted from unknown interface %i: %s", index, addr);
 	/* FIXME: review use of pending_changes */
 	config.pending_changes = true;
 	return -1;
@@ -135,14 +135,14 @@ netdev_add_addr(int index, const char *addr)
 	list_for_each_entry(dev, &netdevs, list) {
 		if (dev->index != index)
 			continue;
-		debug("Address added to interface %s (%i): %s",
-		      dev->name, dev->index, addr);
+		verbose("Address added to interface %s (%i): %s",
+			dev->name, dev->index, addr);
 		if (dev->monitored)
 			config.pending_changes = true;
 		return 0;
 	}
 
-	debug("Address added to unknown interface %i: %s", index, addr);
+	verbose("Address added to unknown interface %i: %s", index, addr);
 	config.pending_changes = true;
 	return -1;
 }
@@ -156,8 +156,8 @@ netdev_del(int index)
 	list_for_each_entry_safe(dev, tmp, &netdevs, list) {
 		if (dev->index != index)
 			continue;
-		debug("Deleted interface %s, index %i (%smonitored)",
-		      dev->name, dev->index, dev->monitored ? "" : "not ");
+		verbose("Deleted interface %s, index %i (%smonitored)",
+			dev->name, dev->index, dev->monitored ? "" : "not ");
 		list_del(&dev->list);
 		if (dev->monitored)
 			config.monitored_netdevs_count--;
@@ -218,13 +218,13 @@ netdev_add(int index, const char *name)
 
 	dev = malloc(sizeof(*dev));
 	if (!dev) {
-		perror("malloc");
+		error("malloc (%m)");
 		return -1;
 	}
 
 	dev->name = strdup(name);
 	if (!dev->name) {
-		perror("strdup");
+		error("strdup (%m)");
 		free(dev);
 		return -1;
 	}
@@ -237,8 +237,8 @@ netdev_add(int index, const char *name)
 		update_ready_state();
 	}
 
-	debug("Added interface %s, index %i (%smonitored)",
-	      dev->name, dev->index, dev->monitored ? "" : "not ");
+	verbose("Added interface %s, index %i (%smonitored)",
+		dev->name, dev->index, dev->monitored ? "" : "not ");
 	return 0;
 }
 
@@ -262,10 +262,10 @@ netlink_read_once(int nfd)
 			return 0;
 		else if (errno == EINTR)
 			return 1;
-		error("recv");
+		error("netlink recv (%m)");
 		return -1;
 	} else if ((size_t)r >= sizeof(buffer)) {
-		printf("Netlink buffer overflow (%zi)\n", r);
+		error("netlink buffer overflow (%zi)", r);
 		return -1;
 	}
 
@@ -326,7 +326,7 @@ netlink_read_once(int nfd)
 			break;
 
 		default:
-			printf("Unhandled netlink type: %i\n", nlh->nlmsg_type);
+			debug("Unhandled netlink type: %i", nlh->nlmsg_type);
 			break;
 		}
 	}
@@ -345,6 +345,8 @@ netlink_read(int nfd)
 			break;
 	}
 
+	if (r < 0)
+		set_state(RELOADING, "netlink read");
 	return r;
 }
 
@@ -416,21 +418,19 @@ timerfd_read_once(int tfd)
 	ssize_t r;
 
 	r = read(tfd, &exp, sizeof(exp));
-	if (r == 0) {
-		return 0;
-	} else if (r < 0) {
+	if (r < 0) {
 		if (errno == EAGAIN || errno == EWOULDBLOCK)
 			return 0;
 		else if (errno == EINTR)
 			return 1;
-		perror("read timerfd");
+		error("timerfd read (%m)");
 		return -1;
 	} else if ((size_t)r != sizeof(exp)) {
-		printf("timerfd weird read size: %zi\n", r);
+		error("timerfd weird read size: %zi", r);
 		return -1;
 	}
 
-	printf("Timer expiry: %" PRIu64 "\n", exp);
+	debug("Timerfd expiries: %" PRIu64, exp);
 	return 1;
 }
 
@@ -444,6 +444,9 @@ timerfd_read(int tfd)
 		if (r <= 0)
 			break;
 	}
+
+	if (r < 0)
+		set_state(RELOADING, "timerfd_read");
 
 	return r;
 }
@@ -496,42 +499,44 @@ signalfd_read_once(int sfd)
 	ssize_t r;
 
 	r = read(sfd, &sig, sizeof(sig));
-	if (r == 0) {
-		return 0;
-	} else if (r < 0) {
+	if (r < 0) {
 		if (errno == EAGAIN || errno == EWOULDBLOCK)
 			return 0;
 		else if (errno == EINTR)
 			return 1;
-		perror("read signalfd");
+		error("signalfd read (%m)");
+		set_state(RELOADING, "signalfd_read");
 		return -1;
 	} else if ((size_t)r != sizeof(sig)) {
-		printf("signalfd weird read size: %zi\n", r);
+		error("signalfd weird read size: %zi", r);
+		set_state(RELOADING, "signalfd_read");
 		return -1;
 	}
 
-	printf("Received signal (%u): %s\n", (unsigned)sig.ssi_signo, strsignal(sig.ssi_signo));
+	debug("Received signal (%u): %s", (unsigned)sig.ssi_signo, strsignal(sig.ssi_signo));
 	switch (sig.ssi_signo) {
 	case SIGINT:
 		_fallthrough_;
 	case SIGTERM:
 		set_state(STOPPING, "SIGTERM");
+		r = 0;
 		break;
 	case SIGHUP:
 		set_state(RELOADING, "SIGHUP");
+		r = 0;
 		break;
 	case SIGUSR1:
 		struct netdev *dev;
-		printf("Dumping list of known netdevs:\n");
-		list_for_each_entry(dev, &netdevs, list) {
-			printf("\tnetdev: index %i, name %s\n", dev->index, dev->name);
-		}
-		break;
+		info("Dumping list of known netdevs:");
+		list_for_each_entry(dev, &netdevs, list)
+			info("\tnetdev: index %i, name %s", dev->index, dev->name);
+		_fallthrough_;
 	default:
+		r = 1;
 		break;
 	}
 
-	return 1;
+	return r;
 }
 
 static int
@@ -599,7 +604,8 @@ childfd_wait_once(int *cfd)
 		else if (errno == EINTR)
 			return 1;
 
-		perror("waitid");
+		error("waitid (%m)");
+		set_state(RELOADING, "waitid");
 		close(*cfd);
 		*cfd = -1;
 		return -1;
@@ -610,30 +616,33 @@ childfd_wait_once(int *cfd)
 
 	switch (info.si_code) {
 	case CLD_EXITED:
-		printf("Child exited, status: %i\n", info.si_status);
-		break;
-	case CLD_KILLED:
-		printf("Child killed, signal: %i\n", info.si_status);
+		if (info.si_status == 0)
+			verbose("Child command finished with success");
+		else
+			info("Child command exited with error: %i", info.si_status);
 		break;
 	case CLD_DUMPED:
-		printf("Child dumped, signal: %i\n", info.si_status);
+		_fallthrough_;
+	case CLD_KILLED:
+		verbose("Child command killed with signal: %i", info.si_status);
 		break;
 	case CLD_STOPPED:
-		printf("Child stopped, signal: %i\n", info.si_status);
-		break;
+		debug("Child stopped, signal: %i", info.si_status);
+		goto out;
 	case CLD_CONTINUED:
-		printf("Child continued, signal: %i\n", info.si_status);
-		break;
+		debug("Child continued, signal: %i", info.si_status);
+		goto out;
 	case CLD_TRAPPED:
-		printf("Traced child has trapped, signal: %i\n", info.si_status);
-		break;
+		debug("Traced child has trapped, signal: %i", info.si_status);
+		goto out;
 	default:
-		printf("Unknown child state: %i\n", info.si_code);
-		break;
+		debug("Unknown child state: %i", info.si_code);
+		goto out;
 	}
 
 	close(*cfd);
 	*cfd = -1;
+out:
 	return 0;
 }
 
@@ -693,16 +702,19 @@ childfd_init(const char *path)
 
 	pid = sys_clone3(&args);
 	if (pid < 0) {
-		perror("clone3");
+		error("clone3 (%m)");
+		set_state(RELOADING, "clone3");
 		return -1;
 	} else if (pid == 0) {
 		/* Child */
 		execl(path, path, NULL);
-		perror("execl");
+		error("execl (%m)");
+		fflush(stdout);
+		fflush(stderr);
 		exit(EXIT_FAILURE);
 	} else {
 		/* Parent */
-		printf("Created child PID %d with pidfd %d\n", pid, pidfd);
+		verbose("Launched command %s, pid %d, pidfd %d", path, pid, pidfd);
 		config.pending_changes = false;
 		return pidfd;
 	}
@@ -784,9 +796,13 @@ event_loop()
 			netlink_read(nfd);
 
 		} else if (ev.data.fd == tfd) {
-			timerfd_read(tfd);
+			if (timerfd_read(tfd) < 0)
+				break;
+
 			cfd = childfd_init("./test.sh");
-			debug("Child pidfd = %i", cfd);
+			if (cfd < 0)
+				break;
+
 			epoll_add(efd, cfd);
 
 		} else if (ev.data.fd == sfd) {
