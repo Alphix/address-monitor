@@ -164,8 +164,14 @@ netdev_add_addr(int index, const char *addr)
 		}
 	
 		netdev_addr = malloc(sizeof(*netdev_addr));
+		if (!netdev_addr) {
+			error("malloc netdev_addr (%m)");
+			return -1;
+		}
+
 		netdev_addr->addr = strdup(addr);
 		if (!netdev_addr->addr) {
+			free(netdev_addr);
 			error("strdup addr (%m");
 			return -1;
 		}
@@ -192,6 +198,8 @@ netdev_del(int index)
 		if (dev->index != index)
 			continue;
 
+		list_del(&dev->list);
+
 		list_for_each_entry_safe(netdev_addr, taddr, &dev->addrs, list) {
 			list_del(&netdev_addr->list);
 			free(netdev_addr->addr);
@@ -201,7 +209,6 @@ netdev_del(int index)
 		verbose("Deleted interface %s, index %i (%smonitored)",
 			dev->name, dev->index, dev->monitored ? "" : "not ");
 
-		list_del(&dev->list);
 		if (dev->monitored)
 			config.monitored_netdevs_count--;
 		free(dev->name);
@@ -219,10 +226,18 @@ static unsigned
 netdev_del_all()
 {
 	struct netdev *dev, *tmp;
+	struct netdev_addr *netdev_addr, *taddr;
 	unsigned r = 0;
 
 	list_for_each_entry_safe(dev, tmp, &config.netdevs, list) {
 		list_del(&dev->list);
+
+		list_for_each_entry_safe(netdev_addr, taddr, &dev->addrs, list) {
+			list_del(&netdev_addr->list);
+			free(netdev_addr->addr);
+			free(netdev_addr);
+		}
+
 		if (dev->monitored)
 			config.monitored_netdevs_count--;
 		free(dev->name);
@@ -230,7 +245,6 @@ netdev_del_all()
 		r++;
 	}
 
-	config.pending_changes = true;
 	return r;
 }
 
