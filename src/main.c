@@ -390,6 +390,10 @@ netlink_read_once(int nfd)
 		case NLMSG_DONE:
 			break;
 
+		case NLMSG_ERROR:
+			verbose("Netlink error received");
+			return -1;
+
 		default:
 			debug("Unhandled netlink type: %i", nlh->nlmsg_type);
 			break;
@@ -416,25 +420,51 @@ netlink_read(int nfd)
 }
 
 static int
-netlink_get_names(int sock)
+netlink_get_names(int nfd)
 {
-	size_t msglen = NLMSG_LENGTH(sizeof(struct ifinfomsg));
+	ssize_t r;
+	size_t if_msglen = NLMSG_LENGTH(sizeof(struct ifinfomsg));
 	struct {
 		struct nlmsghdr nlhdr;
 		struct ifinfomsg infomsg;
-	} msg = {
-		.nlhdr.nlmsg_len = msglen,
+	} if_msg = {
+		.nlhdr.nlmsg_len = if_msglen,
 		.nlhdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ROOT,
 		.nlhdr.nlmsg_type = RTM_GETLINK,
 		.infomsg.ifi_family = AF_UNSPEC,
 	};
-	ssize_t r;
+	size_t addr_msglen = NLMSG_LENGTH(sizeof(struct ifaddrmsg));
+	struct {
+		struct nlmsghdr nlhdr;
+		struct ifaddrmsg addrmsg;
+	} addr_msg = {
+		.nlhdr.nlmsg_len = addr_msglen,
+		.nlhdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ROOT,
+		.nlhdr.nlmsg_type = RTM_GETADDR,
+		.addrmsg.ifa_family = AF_UNSPEC,
+	};
 
-	r = send(sock, &msg, msglen, 0);
-	if (r < 0 || (size_t)r != msglen)
+	r = send(nfd, &if_msg, if_msglen, 0);
+	if (r < 0 || (size_t)r != if_msglen) {
 		error("netlink send (%m)");
+		return r;
+	}
 
-	return r;
+	r = netlink_read(nfd);
+	if (r < 0)
+		return r;
+
+	r = send(nfd, &addr_msg, addr_msglen, 0);
+	if (r < 0 || (size_t)r != addr_msglen) {
+		error("netlink send (%m)");
+		return r;
+	}
+
+	r = netlink_read(nfd);
+	if (r < 0)
+		return r;
+
+	return 0;
 }
 
 static int
@@ -444,30 +474,30 @@ netlink_init()
 		.nl_family = AF_NETLINK,
 		.nl_groups = RTMGRP_LINK | RTMGRP_IPV4_IFADDR | RTMGRP_IPV6_IFADDR,
 	};
-	int fd;
+	int nfd;
 
-	fd = socket(PF_NETLINK, SOCK_RAW | SOCK_NONBLOCK | SOCK_CLOEXEC, NETLINK_ROUTE);
-	if (fd < 0) {
+	nfd = socket(PF_NETLINK, SOCK_RAW | SOCK_NONBLOCK | SOCK_CLOEXEC, NETLINK_ROUTE);
+	if (nfd < 0) {
 		error("netlink socket (%m)");
 		goto out;
 	}
 
-	if (bind(fd, (struct sockaddr *)&snl, sizeof(snl)) < 0) {
+	if (bind(nfd, (struct sockaddr *)&snl, sizeof(snl)) < 0) {
 		error("bind (%m)");
-		close(fd);
-		fd = -1;
+		close(nfd);
+		nfd = -1;
 		goto out;
 	}
 
-	if (netlink_get_names(fd) < 0) {
-		close(fd);
-		fd = -1;
+	if (netlink_get_names(nfd) < 0) {
+		close(nfd);
+		nfd = -1;
 	}
 
 out:
-	if (fd < 0)
+	if (nfd < 0)
 		set_state(RELOADING, "netlink_init");
-	return fd;
+	return nfd;
 }
 
 /*
@@ -540,15 +570,15 @@ timerfd_arm(int tfd)
 static int
 timerfd_init()
 {
-	int fd;
+	int tfd;
 
-	fd = timerfd_create(CLOCK_BOOTTIME, TFD_NONBLOCK | TFD_CLOEXEC);
-	if (fd < 0) {
+	tfd = timerfd_create(CLOCK_BOOTTIME, TFD_NONBLOCK | TFD_CLOEXEC);
+	if (tfd < 0) {
 		error("timerfd_create (%m)");
 		set_state(RELOADING, "timerfd_create");
 	}
 
-	return fd;
+	return tfd;
 }
 
 /*
@@ -983,4 +1013,3 @@ main(int argc, char **argv)
 	fflush(stderr);
 	exit(EXIT_SUCCESS);
 }
-
