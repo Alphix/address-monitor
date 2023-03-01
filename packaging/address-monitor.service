@@ -1,5 +1,5 @@
 [Unit]
-Description=example systemd service unit file.
+Description=Monitor Address Changes on Network Devices
 
 [Service]
 Type=notify
