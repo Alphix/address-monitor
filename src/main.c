@@ -817,7 +817,7 @@ childfd_init(const char *path)
 		return -1;
 	} else if (pid == 0) {
 		/* Child */
-		sd_notify(1, "");
+		unsetenv("NOTIFY_SOCKET");
 		execl(path, path, NULL);
 		error("execl %s: %m", path);
 		fflush(stdout);
