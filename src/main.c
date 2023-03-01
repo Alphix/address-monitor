@@ -340,7 +340,7 @@ netlink_read_once(int nfd)
 		switch (nlh->nlmsg_type) {
 		case RTM_NEWLINK:
 			_fallthrough_;
-		case RTM_DELLINK:
+		case RTM_DELLINK: /* needed for older gcc */;
 			struct ifinfomsg *ifi = NLMSG_DATA(nlh);
 			char if_name[128];
 
@@ -360,7 +360,7 @@ netlink_read_once(int nfd)
 
 		case RTM_NEWADDR:
 			_fallthrough_;
-		case RTM_DELADDR:
+		case RTM_DELADDR: /* needed for older gcc */;
 			struct ifaddrmsg *ifa = NLMSG_DATA(nlh);
 			char if_addr[1024];
 
@@ -635,8 +635,8 @@ signalfd_read_once(int sfd)
 		r = 0;
 		break;
 	case SIGUSR1:
-		struct netdev *dev;
 		info("Dumping list of known netdevs:");
+		struct netdev *dev;
 		list_for_each_entry(dev, &config.netdevs, list)
 			info("\tnetdev: index %i, name %s", dev->index, dev->name);
 		_fallthrough_;
