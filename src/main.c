@@ -10,10 +10,10 @@
 #include <getopt.h>
 
 #include <arpa/inet.h>
+#include <asm/types.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
 #include <linux/sched.h>
-#include <linux/wait.h>
 #include <sched.h>
 #include <sys/syscall.h>
 #include <sys/timerfd.h>
