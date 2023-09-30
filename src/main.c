@@ -567,7 +567,7 @@ timerfd_arm(int tfd)
 	struct itimerspec new_value = {
 		.it_value.tv_sec = 10,
 		.it_value.tv_nsec = 0,
-		.it_interval.tv_sec = 0,
+		.it_interval.tv_sec = 10,
 		.it_interval.tv_nsec = 0,
 	};
 	struct itimerspec old_value;
@@ -726,10 +726,12 @@ childfd_wait_once(int *cfd)
 
 	switch (info.si_code) {
 	case CLD_EXITED:
-		if (info.si_status == 0)
+		if (info.si_status == 0) {
 			verbose("Child command finished successfully");
-		else
+			config.pending_changes = false;
+		} else {
 			info("Child command exited with error: %i", info.si_status);
+		}
 		break;
 	case CLD_DUMPED:
 		_fallthrough_;
@@ -826,7 +828,6 @@ childfd_init(const char *path)
 	} else {
 		/* Parent */
 		verbose("Launched command %s, pid %d, pidfd %d", path, pid, pidfd);
-		config.pending_changes = false;
 		return pidfd;
 	}
 }
@@ -908,6 +909,9 @@ event_loop()
 
 		} else if (ev.data.fd == tfd) {
 			if (timerfd_read(tfd) < 0)
+				break;
+
+			if (cfd >= 0)
 				break;
 
 			cfd = childfd_init(config.command);
