@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-2.0
 project('address-monitor',
 	'c',
-	version: '0.1.0',
+	version: '2',
 	license: 'GPL2',
 	default_options : [
 		'c_std=gnu18',
