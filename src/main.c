@@ -573,12 +573,12 @@ timerfd_read(int tfd)
 }
 
 static int
-timerfd_arm(int tfd)
+timerfd_set(int tfd, time_t seconds)
 {
 	struct itimerspec new_value = {
-		.it_value.tv_sec = 10,
+		.it_value.tv_sec = seconds,
 		.it_value.tv_nsec = 0,
-		.it_interval.tv_sec = 10,
+		.it_interval.tv_sec = seconds,
 		.it_interval.tv_nsec = 0,
 	};
 	struct itimerspec old_value;
@@ -903,8 +903,11 @@ event_loop()
 		int r;
 
 		if (config.state == CHANGES_PENDING)
-			if (timerfd_arm(tfd) < 0)
-				break;
+			r = timerfd_set(tfd, 10);
+		else
+			r = timerfd_set(tfd, 0);
+		if (r < 0)
+			break;
 
 		r = epoll_wait(efd, &ev, 1, -1);
 		if (r < 0) {
