@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * This is the doubly linked list implementation taken from the Linux
+ * This doubly linked list implementation is copied from the Linux
  * kernel (26 June 2020).
  *
  * The only modifications are the ones necessary to make it compile
@@ -10,6 +10,10 @@
 
 #ifndef _LINUX_LIST_H
 #define _LINUX_LIST_H
+
+#pragma GCC diagnostic ignored "-Wcast-align"
+#pragma GCC diagnostic ignored "-Wcast-qual"
+#pragma GCC diagnostic ignored "-Wc++-compat"
 
 /* Added stuff */
 struct list_head {

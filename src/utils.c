@@ -87,6 +87,9 @@ set_logging_type(bool *use_colors, bool *sd_daemon)
 	*use_colors = true;
 }
 
+static void msg(enum debug_lvl lvl, const char *fmt, va_list ap)
+	__attribute__ ((format (printf, 2, 0)));
+
 static void
 msg(enum debug_lvl lvl, const char *fmt, va_list ap)
 {

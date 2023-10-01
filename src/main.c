@@ -345,7 +345,7 @@ netlink_read_once(int nfd)
 	if (nlh->nlmsg_flags & MSG_TRUNC)
 		return -1;
 
-	for (int len = r; NLMSG_OK(nlh, len); nlh = NLMSG_NEXT(nlh, len)) {
+	for (unsigned len = (unsigned)r; NLMSG_OK(nlh, len); nlh = NLMSG_NEXT(nlh, len)) {
 		struct rtattr *rth;
 		int if_index;
 
@@ -359,7 +359,7 @@ netlink_read_once(int nfd)
 			if_index = ifi->ifi_index;
 			rth = IFLA_RTA(ifi);
 
-			for (int rtl = IFLA_PAYLOAD(nlh); RTA_OK(rth, rtl); rth = RTA_NEXT(rth, rtl)) {
+			for (long unsigned rtl = IFLA_PAYLOAD(nlh); RTA_OK(rth, rtl); rth = RTA_NEXT(rth, rtl)) {
 				if (rth->rta_type == IFLA_IFNAME)
 					strcpy(if_name, RTA_DATA(rth));
 			}
@@ -379,10 +379,10 @@ netlink_read_once(int nfd)
 			if (ifa->ifa_flags & IFA_F_TENTATIVE)
 				continue;
 
-			if_index = ifa->ifa_index;
+			if_index = (int)ifa->ifa_index;
 			rth = IFA_RTA(ifa);
 
-			for (int rtl = IFA_PAYLOAD(nlh); RTA_OK(rth, rtl); rth = RTA_NEXT(rth, rtl)) {
+			for (long unsigned rtl = IFA_PAYLOAD(nlh); RTA_OK(rth, rtl); rth = RTA_NEXT(rth, rtl)) {
 				switch (ifa->ifa_family) {
 				case AF_INET:
 					if (rth->rta_type != IFA_LOCAL)
@@ -398,8 +398,8 @@ netlink_read_once(int nfd)
 
 					size_t offset = strlen(if_addr);
 					size_t remain = sizeof(if_addr) - offset;
-					int len = snprintf(if_addr + offset, remain, "/%" PRIu8, ifa->ifa_prefixlen);
-					if (len < 1 || (unsigned)len >= remain)
+					int slen = snprintf(if_addr + offset, remain, "/%" PRIu8, ifa->ifa_prefixlen);
+					if (slen < 1 || (unsigned)slen >= remain)
 						return -1;
 					break;
 				default:
@@ -445,7 +445,7 @@ netlink_read(int nfd)
 	return r;
 }
 
-static int
+static ssize_t
 netlink_get_names(int nfd)
 {
 	ssize_t r;
@@ -454,7 +454,7 @@ netlink_get_names(int nfd)
 		struct nlmsghdr nlhdr;
 		struct ifinfomsg infomsg;
 	} if_msg = {
-		.nlhdr.nlmsg_len = if_msglen,
+		.nlhdr.nlmsg_len = (unsigned)if_msglen,
 		.nlhdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ROOT,
 		.nlhdr.nlmsg_type = RTM_GETLINK,
 		.infomsg.ifi_family = AF_UNSPEC,
@@ -464,7 +464,7 @@ netlink_get_names(int nfd)
 		struct nlmsghdr nlhdr;
 		struct ifaddrmsg addrmsg;
 	} addr_msg = {
-		.nlhdr.nlmsg_len = addr_msglen,
+		.nlhdr.nlmsg_len = (unsigned)addr_msglen,
 		.nlhdr.nlmsg_flags = NLM_F_REQUEST | NLM_F_ROOT,
 		.nlhdr.nlmsg_type = RTM_GETADDR,
 		.addrmsg.ifa_family = AF_UNSPEC,
@@ -613,7 +613,7 @@ timerfd_init(void)
  *   0 = done
  * > 0 = read again
  */
-static int
+static ssize_t
 signalfd_read_once(int sfd)
 {
 	struct signalfd_siginfo sig;
@@ -634,7 +634,10 @@ signalfd_read_once(int sfd)
 		return -1;
 	}
 
-	debug("Received signal (%u): %s", (unsigned)sig.ssi_signo, strsignal(sig.ssi_signo));
+	debug("Received signal (%u): %s",
+	      (unsigned)sig.ssi_signo, 
+	      strsignal((int)sig.ssi_signo));
+
 	switch (sig.ssi_signo) {
 	case SIGINT:
 		_fallthrough_;
@@ -660,10 +663,10 @@ signalfd_read_once(int sfd)
 	return r;
 }
 
-static int
+static ssize_t
 signalfd_read(int sfd)
 {
-	int r;
+	ssize_t r;
 
 	while (true) {
 		r = signalfd_read_once(sfd);
@@ -713,12 +716,15 @@ childfd_wait_once(int *cfd)
 {
 	siginfo_t info;
 	int r;
+	id_t cid;
 
 	if (*cfd < 0)
 		return 0;
+	else
+		cid = *((id_t *)cfd);
 
 	info.si_pid = 0;
-	r = waitid(P_PIDFD, *cfd, &info, WEXITED | WSTOPPED | WCONTINUED | WNOHANG);
+	r = waitid(P_PIDFD, cid, &info, WEXITED | WSTOPPED | WCONTINUED | WNOHANG);
 	if (r < 0) {
 		if (errno == EAGAIN)
 			return 0;
@@ -1027,7 +1033,7 @@ config_init(int argc, char **argv)
 
 	if (optind < argc) {
 		config.to_monitor_netdevs = &argv[optind];
-		config.to_monitor_netdevs_count = argc - optind;
+		config.to_monitor_netdevs_count = (unsigned)(argc - optind);
 	}
 
 	if (config.log_file_path) {

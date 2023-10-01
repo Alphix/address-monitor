@@ -73,9 +73,11 @@ static inline bool debug_enabled(enum debug_lvl lvl)
 			die(msg);                                              \
 	} while (0)
 
-void __debug(enum debug_lvl lvl, const char *fmt, ...);
+void __debug(enum debug_lvl lvl, const char *fmt, ...)
+	__attribute__ ((format (printf, 2, 3)));
 
-_noreturn_ void __die(const char *fmt, ...);
+_noreturn_ void __die(const char *fmt, ...)
+	__attribute__ ((format (printf, 1, 2)));
 
 static inline bool empty_str(const char *str)
 {
@@ -95,7 +97,7 @@ static inline bool strcaseeq(const char *a, const char *b)
 	return strcasecmp(a, b) == 0;
 }
 
-static inline int sys_pidfd_send_signal(int pidfd, int signal)
+static inline long sys_pidfd_send_signal(int pidfd, int signal)
 {
 	return syscall(SYS_pidfd_send_signal, pidfd, signal, NULL, 0);
 }

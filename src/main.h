@@ -2,6 +2,8 @@
 #ifndef foomainhfoo
 #define foomainhfoo
 
+#pragma GCC diagnostic ignored "-Wpadded"
+
 #include "list.h"
 
 enum states {
@@ -33,7 +35,7 @@ struct config {
 	const char *command;
 	unsigned monitored_netdevs_count;
 	char **to_monitor_netdevs;
-	char to_monitor_netdevs_count;
+	unsigned to_monitor_netdevs_count;
 	struct list_head netdevs;
 };
 
