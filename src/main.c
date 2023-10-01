@@ -1022,7 +1022,7 @@ config_init(int argc, char **argv)
 			long t;
 			char *end;
 			t = strtol(optarg, &end, 10);
-			if (end != NULL || t < 1 || t > (60 * 60 * 24))
+			if (*end != '\0' || t < 1 || t > (60 * 60 * 24))
 				die("Invalid wait time value");
 			config.wait_time = (time_t)t;
 			break;
