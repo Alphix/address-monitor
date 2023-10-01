@@ -978,11 +978,12 @@ usage(bool invalid)
 	       "\n"
 	       "Valid options:\n"
 	       "  -c, --command=PATH\texecute the command at PATH on address change\n"
-	       "  -w, --wait=TIME\twait TIME seconds after an address change before running the command\n"
+	       "  -w, --wait=TIME\twait TIME seconds before running the command\n"
 	       "  -l, --logfile=FILE\tlog to FILE instead of stderr\n"
 	       "  -h, --help\t\tprint this information\n"
 	       "  -v, --verbose\t\tenable verbose logging\n"
 	       "  -d, --debug\t\tenable debug logging\n"
+	       "  -V, --version\t\tprint the version and exit\n"
 	       "\n"
 	       "When IFNAME(s) are provided, monitor the given interfaces.\n"
 	       "Otherwise, all interfaces are monitored.\n",
@@ -1005,10 +1006,11 @@ config_init(int argc, char **argv)
 			{ "help",	no_argument,		0, 'h' },
 			{ "verbose",	no_argument,		0, 'v' },
 			{ "debug",	no_argument,		0, 'd' },
+			{ "version",	no_argument,		0, 'V' },
 			{ 0,		0,			0,  0  },
 		};
 
-		c = getopt_long(argc, argv, ":c:w:l:hvd", long_options, &option_index);
+		c = getopt_long(argc, argv, ":c:w:l:hvdV", long_options, &option_index);
 		if (c == -1)
 			break;
 
@@ -1036,6 +1038,9 @@ config_init(int argc, char **argv)
 		case 'h':
 			usage(false);
 			break;
+		case 'V':
+			printf("%s\n", VERSION);
+			exit(EXIT_SUCCESS);
 		default:
 			usage(true);
 			break;
