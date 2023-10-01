@@ -37,6 +37,7 @@ struct config {
 	char **to_monitor_netdevs;
 	unsigned to_monitor_netdevs_count;
 	struct list_head netdevs;
+	time_t wait_time;
 };
 
 extern struct config config;

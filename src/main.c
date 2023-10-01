@@ -37,6 +37,7 @@ struct config config = {
 	.to_monitor_netdevs = NULL,
 	.to_monitor_netdevs_count = 0,
 	.netdevs = LIST_HEAD_INIT(config.netdevs),
+	.wait_time = 10,
 };
 
 static void
@@ -909,7 +910,7 @@ event_loop(void)
 		int r;
 
 		if (config.state == CHANGES_PENDING)
-			r = timerfd_set(tfd, 10);
+			r = timerfd_set(tfd, config.wait_time);
 		else
 			r = timerfd_set(tfd, 0);
 		if (r < 0)
@@ -977,6 +978,7 @@ usage(bool invalid)
 	       "\n"
 	       "Valid options:\n"
 	       "  -c, --command=PATH\texecute the command at PATH on address change\n"
+	       "  -w, --wait=TIME\twait TIME seconds after an address change before running the command\n"
 	       "  -l, --logfile=FILE\tlog to FILE instead of stderr\n"
 	       "  -h, --help\t\tprint this information\n"
 	       "  -v, --verbose\t\tenable verbose logging\n"
@@ -998,6 +1000,7 @@ config_init(int argc, char **argv)
 		int option_index = 0;
 		static struct option long_options[] = {
 			{ "command",	required_argument,	0, 'c' },
+			{ "wait",	required_argument,	0, 'w' },
 			{ "logfile",	required_argument,	0, 'l' },
 			{ "help",	no_argument,		0, 'h' },
 			{ "verbose",	no_argument,		0, 'v' },
@@ -1005,13 +1008,21 @@ config_init(int argc, char **argv)
 			{ 0,		0,			0,  0  },
 		};
 
-		c = getopt_long(argc, argv, ":c:l:hvd", long_options, &option_index);
+		c = getopt_long(argc, argv, ":c:w:l:hvd", long_options, &option_index);
 		if (c == -1)
 			break;
 
 		switch (c) {
 		case 'c':
 			config.command = optarg;
+			break;
+		case 'w':
+			long t;
+			char *end;
+			t = strtol(optarg, &end, 10);
+			if (end != NULL || t < 1 || t > (60 * 60 * 24))
+				die("Invalid wait time value");
+			config.wait_time = (time_t)t;
 			break;
 		case 'l':
 			config.log_file_path = optarg;
@@ -1056,7 +1067,7 @@ main(int argc, char **argv)
 	while (config.state != STOPPING) {
 		event_loop();
 		if (config.state != STOPPING)
-			sleep(10);
+			sleep(config.wait_time);
 	}
 
 	if (config.log_file) {
