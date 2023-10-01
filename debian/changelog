@@ -1,5 +1,0 @@
-address-monitor (1-1) unstable; urgency=medium
-
-  * Initial release (Closes: #nnnn)  <nnnn is the bug number of your ITP>
-
- -- David Härdeman <david@hardeman.nu>  Tue, 28 Feb 2023 20:10:40 +0100
