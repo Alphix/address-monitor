@@ -19,7 +19,7 @@ static const char *ansi_grey = "";
 static const char *ansi_normal = "";
 
 static void
-enable_colors()
+enable_colors(void)
 {
         ansi_red = ANSI_RED;
         ansi_green = ANSI_GREEN;

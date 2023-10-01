@@ -40,7 +40,7 @@ struct config config = {
 };
 
 static void
-update_ready_state()
+update_ready_state(void)
 {
 	if (config.state != READY)
 		return;
@@ -235,7 +235,7 @@ netdev_del(int index)
 }
 
 static unsigned
-netdev_del_all()
+netdev_del_all(void)
 {
 	struct netdev *dev, *tmp;
 	struct netdev_addr *netdev_addr, *taddr;
@@ -494,7 +494,7 @@ netlink_get_names(int nfd)
 }
 
 static int
-netlink_init()
+netlink_init(void)
 {
 	struct sockaddr_nl snl = {
 		.nl_family = AF_NETLINK,
@@ -594,7 +594,7 @@ timerfd_set(int tfd, time_t seconds)
 }
 
 static int
-timerfd_init()
+timerfd_init(void)
 {
 	int tfd;
 
@@ -675,7 +675,7 @@ signalfd_read(int sfd)
 }
 
 static int
-signalfd_init()
+signalfd_init(void)
 {
 	sigset_t sigset;
 	int r;
@@ -869,7 +869,7 @@ epoll_add(int efd, int fd)
 }
 
 static int
-event_loop()
+event_loop(void)
 {
 	static bool first = true;
 
