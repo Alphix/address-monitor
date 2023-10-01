@@ -28,7 +28,7 @@
 
 struct config config = {
 	.state = RELOADING,
-	.pending_changes = false,
+	.failed_helper_attempts = 0,
 	.daemonize = false,
 	.log_file = NULL,
 	.log_file_path = NULL,
@@ -48,18 +48,18 @@ update_ready_state()
 	if (config.to_monitor_netdevs_count > 0) {
 		sd_notifyf(0,
 			   "READY=1\n"
-			   "STATUS=Running, %u/%u netdevs being monitored\n",
+			   "STATUS=Running, monitoring %u/%u netdev(s)\n",
 			   config.monitored_netdevs_count,
 			   config.to_monitor_netdevs_count);
-		verbose("State: Running, %u/%u netdevs being monitored",
+		verbose("State: Running, monitoring %u/%u netdev(s)",
 			config.monitored_netdevs_count,
 			config.to_monitor_netdevs_count);
 	} else {
 		sd_notifyf(0,
 			   "READY=1\n"
-			   "STATUS=Running, %u netdevs being monitored\n",
+			   "STATUS=Running, monitoring %u netdev(s)\n",
 			   config.monitored_netdevs_count);
-		verbose("State: Running, %u netdevs being monitored",
+		verbose("State: Running, monitoring %u netdev(s)",
 			config.monitored_netdevs_count);
 	}
 }
@@ -67,15 +67,21 @@ update_ready_state()
 static void
 set_state(enum states state, const char *reason)
 {
-	if (config.state == state)
-		return;
-
 	config.state = state;
 
 	switch (state) {
 	case READY:
 		update_ready_state();
 		break;
+
+	case CHANGES_PENDING:
+		sd_notifyf(0,
+			   "STATUS=Changes pending (%u attempts): %s\n",
+			   config.failed_helper_attempts, reason);
+		verbose("State: Changes pending (%u attempts): %s",
+			config.failed_helper_attempts, reason);
+		break;
+
 	case RELOADING:
 		if (reason) {
 			sd_notifyf(0,
@@ -89,6 +95,7 @@ set_state(enum states state, const char *reason)
 			verbose("State: Reloading");
 		}
 		break;
+
 	case STOPPING:
 		if (reason) {
 			sd_notifyf(0,
@@ -101,6 +108,10 @@ set_state(enum states state, const char *reason)
 				   "STATUS=Stopping\n");
 			verbose("State: Stopping");
 		}
+		break;
+
+	default:
+		error("set_state: unknown state %i", (int)state);
 		break;
 	}
 }
@@ -135,7 +146,7 @@ netdev_del_addr(int index, const char *addr)
 		verbose("Address deleted from interface %s (%i): %s",
 			dev->name, dev->index, addr);
 
-		config.pending_changes = true;
+		set_state(CHANGES_PENDING, "address deleted");
 		return 0;
 	}
 
@@ -180,7 +191,7 @@ netdev_add_addr(int index, const char *addr)
 		list_add(&netdev_addr->list, &dev->addrs);
 		verbose("New address added to interface %s (%i): %s",
 			dev->name, dev->index, addr);
-		config.pending_changes = true;
+		set_state(CHANGES_PENDING, "address added");
 		return 0;
 	}
 
@@ -218,8 +229,8 @@ netdev_del(int index)
 	}
 
 	if (r > 0)
-		update_ready_state();
-	config.pending_changes = true;
+		set_state(CHANGES_PENDING, "netdev deleted");
+
 	return r;
 }
 
@@ -728,15 +739,20 @@ childfd_wait_once(int *cfd)
 	case CLD_EXITED:
 		if (info.si_status == 0) {
 			verbose("Child command finished successfully");
-			config.pending_changes = false;
+			config.failed_helper_attempts = 0;
+			set_state(READY, NULL);
 		} else {
 			info("Child command exited with error: %i", info.si_status);
+			config.failed_helper_attempts++;
+			set_state(CHANGES_PENDING, "child failure");
 		}
 		break;
 	case CLD_DUMPED:
 		_fallthrough_;
 	case CLD_KILLED:
 		verbose("Child command killed with signal: %i", info.si_status);
+		config.failed_helper_attempts++;
+		set_state(CHANGES_PENDING, "child killed");
 		break;
 	case CLD_STOPPED:
 		debug("Child stopped, signal: %i", info.si_status);
@@ -855,7 +871,16 @@ epoll_add(int efd, int fd)
 static int
 event_loop()
 {
-	set_state(READY, NULL);
+	static bool first = true;
+
+	if (first) {
+		/* Let systemd know we're up and running */
+		set_state(READY, NULL);
+		set_state(CHANGES_PENDING, "startup");
+		first = false;
+	} else {
+		set_state(CHANGES_PENDING, "restart");
+	}
 
 	_cleanup_close_ int efd = -1;
 	_cleanup_close_ int sfd = signalfd_init();
@@ -873,11 +898,11 @@ event_loop()
 
 	debug("Epoll ready: efd %i sfd %i nfd %i tfd %i", efd, sfd, nfd, tfd);
 
-	while (config.state == READY) {
+	while (config.state == READY || config.state == CHANGES_PENDING) {
 		struct epoll_event ev;
 		int r;
 
-		if (config.pending_changes)
+		if (config.state == CHANGES_PENDING)
 			if (timerfd_arm(tfd) < 0)
 				break;
 
@@ -1020,8 +1045,9 @@ main(int argc, char **argv)
 	config_init(argc, argv);
 
 	while (config.state != STOPPING) {
-		config.pending_changes = true;
 		event_loop();
+		if (config.state != STOPPING)
+			sleep(10);
 	}
 
 	if (config.log_file) {

@@ -6,6 +6,7 @@
 
 enum states {
 	READY,
+	CHANGES_PENDING,
 	RELOADING,
 	STOPPING,
 };
@@ -25,7 +26,7 @@ struct netdev {
 
 struct config {
 	enum states state;
-	bool pending_changes;
+	unsigned failed_helper_attempts;
 	bool daemonize;
 	FILE *log_file;
 	const char *log_file_path;
