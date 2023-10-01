@@ -1,0 +1,22 @@
+Source: address-monitor
+Section: net
+Priority: optional
+Maintainer: David Härdeman <david@hardeman.nu>
+Build-Depends: debhelper-compat (= 12),
+               libsystemd-dev,
+	       meson,
+	       pkg-config,
+Standards-Version: 4.5.0
+Rules-Requires-Root: no
+Homepage: https://github.com/Alphix/address-monitor
+Vcs-Browser: https://github.com/Alphix/address-monitor
+Vcs-Git: https://github.com/Alphix/address-monitor.git
+
+Package: address-monitor
+Architecture: linux-any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Monitors interfaces for IPv4/IPv6 address changes
+ address-monitor is a simple daemon which can monitor network interfaces
+ for address changes and launch an external script/helper when a change
+ has been detected (the external script can then do things like update
+ dynamic DNS entries, etc).
